@@ -1,13 +1,24 @@
-// TODO: Test new Diagnostic method properly.
-
 pub const Parser = struct {
-    tokenizer: *Tokenizer,
     gpa: Allocator,
+
+    tokenizer: *Tokenizer,
     current: Token = undefined,
     upcoming: Token = undefined,
+
     nodes: ArrayList(Node) = .empty,
+    adpb: IndicesList = .empty,
     diagnostic: ?Diagnostic = null,
     const Self = @This();
+
+    pub const Diagnostic = struct {
+        expected: Expected,
+        found: Token,
+
+        pub const Expected = union(enum) {
+            tag: Tag,
+            description: []const u8,
+        };
+    };
 
     pub fn init(tokenizer: *Tokenizer, gpa: Allocator) !Self {
         var self: Self = .{ .tokenizer = tokenizer, .gpa = gpa };
@@ -23,14 +34,13 @@ pub const Parser = struct {
     }
 
     pub fn buildTree(self: *Self) Error!Tree {
-        var indices_ = Indices.empty;
+        var indices = IndicesList.empty;
+        errdefer indices.deinit(self.gpa);
         while (!self.match(.eof)) {
             const stmt_index = try self.stmt();
-            try indices_.append(self.gpa, stmt_index);
+            try indices.append(self.gpa, stmt_index);
         }
-        const indices = try indices_.toOwnedSlice(self.gpa);
-        const nodes = try self.nodes.toOwnedSlice(self.gpa);
-        return .{ .indices = indices, .nodes = nodes };
+        return .init(self.gpa, &indices, &self.nodes, &self.adpb);
     }
 
     fn stmt(self: *Self) Error!Index {
@@ -85,38 +95,41 @@ pub const Parser = struct {
 
         try self.expect(.left_paren);
         self.step();
-        var args = Indices.empty;
+
+        const args_start: Index = @intCast(self.adpb.items.len);
         while (true) {
             try self.expect(.ident);
             const arg = try self.push(.{ .ident = self.current.lexeme.? });
-            try args.append(self.gpa, arg);
+
+            try self.adpb.append(self.gpa, arg);
             self.step();
 
             if (self.match(.right_paren)) break;
             try self.expect(.comma);
             self.step();
         }
+        const args_len = @as(Index, @intCast(self.adpb.items.len)) - args_start;
         self.step();
 
         try self.expect(.left_brace);
         self.step();
 
-        var body_nodes = Indices.empty;
-        // TODO: If there is no right brace indeed, the location of the cause
-        // would be bugged out. This needs to be fixed.
+        const body_start: Index = @intCast(self.adpb.items.len);
         while (!self.match(.right_brace)) {
             const stmt_index = try self.stmt();
-            try body_nodes.append(self.gpa, stmt_index);
+            try self.adpb.append(self.gpa, stmt_index);
         }
+        const body_len = @as(Index, @intCast(self.adpb.items.len)) - body_start;
         self.step();
 
         const fn_def: FnDef = .{
             .name = name,
-            .def_args = try args.toOwnedSlice(self.gpa),
-            .body = try body_nodes.toOwnedSlice(self.gpa),
+            .args_start = args_start,
+            .args_len = args_len,
+            .body_start = body_start,
+            .body_len = body_len,
         };
-        const res = self.push(.{ .fn_def = fn_def });
-        return res;
+        return self.push(.{ .fn_def = fn_def });
     }
 
     fn returnStmt(self: *Self) !Index {
@@ -144,17 +157,19 @@ pub const Parser = struct {
         try self.expect(.left_brace);
         self.step();
 
-        var body_nodes = Indices.empty;
+        const body_start: Index = @intCast(self.adpb.items.len);
         while (!self.match(.right_brace)) {
             const stmt_index = try self.stmt();
-            try body_nodes.append(self.gpa, stmt_index);
+            try self.adpb.append(self.gpa, stmt_index);
         }
+        const body_len = @as(Index, @intCast(self.adpb.items.len)) - body_start;
         self.step();
 
         const for_stmt: ForStmt = .{
-            .var_name = var_name,
+            .variable = var_name,
             .iterable = iterable,
-            .body = try body_nodes.toOwnedSlice(self.gpa),
+            .body_start = body_start,
+            .body_len = body_len,
         };
         return self.push(.{ .for_stmt = for_stmt });
     }
@@ -171,15 +186,15 @@ pub const Parser = struct {
     }
 
     fn condExpr(self: *Self) !Index {
-        const then = try self.andOrInExpr();
+        const then = try self.inAndOrExpr();
         if (!self.match(.keyword_if)) return then;
         self.step();
 
-        const if_cond = try self.andOrInExpr();
+        const if_cond = try self.inAndOrExpr();
         try self.expect(.keyword_else);
         self.step();
 
-        const else_expr = try self.andOrInExpr();
+        const else_expr = try self.inAndOrExpr();
         const cond_expr: CondExpr = .{
             .then = then,
             .if_cond = if_cond,
@@ -188,25 +203,25 @@ pub const Parser = struct {
         return self.push(.{ .cond_expr = cond_expr });
     }
 
-    fn andOrInExpr(self: *Self) !Index {
-        var lhs = try self.comparisonExpr();
+    fn inAndOrExpr(self: *Self) !Index {
+        var lhs = try self.compExpr();
         while (true) {
             const op: BinOp = switch (self.current.tag) {
+                .keyword_in => .is_in,
                 .keyword_and => .logic_and,
                 .keyword_or => .logic_or,
-                .keyword_in => .is_in,
                 else => break,
             };
             self.step();
 
-            const rhs = try self.comparisonExpr();
+            const rhs = try self.compExpr();
             const bin_expr: BinExpr = .{ .lhs = lhs, .op = op, .rhs = rhs };
             lhs = try self.push(.{ .bin_expr = bin_expr });
         }
         return lhs;
     }
 
-    fn comparisonExpr(self: *Self) !Index {
+    fn compExpr(self: *Self) !Index {
         var lhs = try self.addSubtrExpr();
         while (true) {
             const op: BinOp = switch (self.current.tag) {
@@ -250,8 +265,8 @@ pub const Parser = struct {
         while (true) {
             const op: BinOp = switch (self.current.tag) {
                 .star => .mult,
-                .slash => .div,
                 .carrot => .power,
+                .slash => .div,
                 else => break,
             };
             self.step();
@@ -305,10 +320,13 @@ pub const Parser = struct {
             return self.push(.{ .ident = name });
         self.step();
 
-        var args = Indices.empty;
+        const args_start: Index = @intCast(self.adpb.items.len);
         while (true) {
             const arg = self.expr() catch blk: {
-                if (!std.mem.eql(u8, name, "Select") or args.items.len != 2)
+                const arg_count =
+                    @as(Index, @intCast(self.adpb.items.len)) - args_start;
+
+                if (!std.mem.eql(u8, name, "Select") or arg_count != 2)
                     return self.fail(.{ .description = "bin comp" });
 
                 const bin_arg: BinOp = switch (self.current.tag) {
@@ -325,15 +343,20 @@ pub const Parser = struct {
 
                 break :blk try self.push(.{ .bin_arg = bin_arg });
             };
-            try args.append(self.gpa, arg);
+            try self.adpb.append(self.gpa, arg);
+
             if (self.match(.right_paren)) break;
             try self.expect(.comma);
             self.step();
         }
         self.step();
+
+        const args_len =
+            @as(Index, @intCast(self.adpb.items.len)) - args_start;
         const call: FnCall = .{
             .name = name,
-            .call_args = try args.toOwnedSlice(self.gpa),
+            .args_start = args_start,
+            .args_len = args_len,
         };
         return self.push(.{ .fn_call = call });
     }
@@ -366,7 +389,8 @@ pub const Parser = struct {
         self.step();
         const expr_ = try self.expr();
         if (!self.match(.keyword_for)) {
-            var elems = Indices.empty;
+            var elems = IndicesList.empty;
+            errdefer elems.deinit(self.gpa);
             try elems.append(self.gpa, expr_);
             while (self.match(.comma)) {
                 self.step();
@@ -376,7 +400,7 @@ pub const Parser = struct {
             }
             self.step();
 
-            const list: List = .{ .elems = try elems.toOwnedSlice(self.gpa) };
+            const list: List = try .init(self.gpa, &elems);
             return self.push(.{ .list = list });
         }
 
@@ -401,7 +425,11 @@ pub const Parser = struct {
 
     fn mapLiteral(self: *Self) !Index {
         self.step();
-        var keys, var values = .{ Indices.empty, Indices.empty };
+        var keys, var values = .{ IndicesList.empty, IndicesList.empty };
+        errdefer {
+            keys.deinit(self.gpa);
+            values.deinit(self.gpa);
+        }
         while (true) {
             const key = try self.expr();
             try keys.append(self.gpa, key);
@@ -415,10 +443,7 @@ pub const Parser = struct {
             self.step();
         }
         self.step();
-        const map: Map = .{
-            .keys = try keys.toOwnedSlice(self.gpa),
-            .values = try values.toOwnedSlice(self.gpa),
-        };
+        const map: Map = try .init(self.gpa, &keys, &values);
         return self.push(.{ .map = map });
     }
 
@@ -441,61 +466,59 @@ pub const Parser = struct {
         self.current = self.tokenizer.next();
     }
 
-    fn match(self: *Self, tag: Tag) bool {
-        return self.current.tag == tag;
+    fn match(self: *Self, with: Tag) bool {
+        return self.current.tag == with;
     }
 
-    fn matchUpcoming(self: *Self, tag: Tag) bool {
-        return self.upcoming.tag == tag;
+    fn matchUpcoming(self: *Self, with: Tag) bool {
+        return self.upcoming.tag == with;
     }
 
-    fn expect(self: *Self, tag: Tag) Error!void {
-        const tag_ = self.current.tag;
-        if (tag_ != tag) return self.fail(.{ .tag = tag });
+    fn expect(self: *Self, expected: Tag) Error!void {
+        if (self.current.tag != expected)
+            return self.fail(.{ .tag = expected });
     }
 
-    fn fail(self: *Self, expected: Diagnostic.Expected) Error {
-        self.diagnostic = .{ .expected = expected, .found = self.current };
+    fn fail(self: *Self, reason: Diagnostic.Expected) Error {
+        self.diagnostic = .{ .expected = reason, .found = self.current };
         return Error.SyntaxParseError;
     }
-};
-
-pub const Diagnostic = struct {
-    expected: Expected,
-    found: Token,
-    pub const Expected = union(enum) {
-        tag: Tag,
-        description: []const u8,
-    };
 };
 
 pub const Error = Allocator.Error || fmt.ParseIntError ||
     error{SyntaxParseError};
 
 pub const Tree = struct {
-    indices: []const u32,
+    indices: []const Index,
     nodes: []const Node,
+    adpb: []const Index,
     const Self = @This();
 
-    pub fn deinit(self: *Self, gpa: Allocator) void {
-        defer self.* = undefined;
-        defer gpa.free(self.nodes);
-        defer gpa.free(self.indices);
+    pub fn init(
+        gpa: Allocator,
+        indices: *IndicesList,
+        nodes: *ArrayList(Node),
+        adpb: *IndicesList,
+    ) !Self {
+        return .{
+            .indices = try indices.toOwnedSlice(gpa),
+            .nodes = try nodes.toOwnedSlice(gpa),
+            .adpb = try adpb.toOwnedSlice(gpa),
+        };
+    }
 
+    pub fn deinit(self: *Self, gpa: Allocator) void {
         for (self.nodes) |node| {
             switch (node) {
-                .fn_call => |fn_call| gpa.free(fn_call.call_args),
-                .list => |list| gpa.free(list.elems),
-                .for_stmt => |for_stmt| gpa.free(for_stmt.body),
-                .fn_def => |fn_def| inline for (.{
-                    fn_def.def_args,
-                    fn_def.body,
-                }) |arr| gpa.free(arr),
-                .map => |map| inline for (.{ map.keys, map.values }) |arr|
-                    gpa.free(arr),
+                .map => |*map| map.deinit(gpa),
+                .list => |*list| list.deinit(gpa),
                 else => {},
             }
         }
+        gpa.free(self.indices);
+        gpa.free(self.nodes);
+        gpa.free(self.adpb);
+        self.* = undefined;
     }
 };
 
@@ -504,18 +527,20 @@ pub const Node = union(enum) {
     string: []const u8,
     boolean: bool,
     ident: []const u8,
-    bin_expr: BinExpr,
-    cond_expr: CondExpr,
-    assign_stmt: AssignStmt,
-    fn_call: FnCall,
-    fn_def: FnDef,
-    return_stmt: ReturnStmt,
     list: List,
     list_comp: ListComp,
     map: Map,
+
+    bin_expr: BinExpr,
+    cond_expr: CondExpr,
     index_expr: IndexExpr,
-    for_stmt: ForStmt,
+
+    assign_stmt: AssignStmt,
+    fn_def: FnDef,
+    return_stmt: ReturnStmt,
+    fn_call: FnCall,
     bin_arg: BinOp,
+    for_stmt: ForStmt,
 };
 
 pub const BinExpr = struct { lhs: Index, op: BinOp, rhs: Index };
@@ -539,7 +564,11 @@ pub const BinOp = enum {
     is_in,
 };
 
-pub const FnCall = struct { name: []const u8, call_args: []const Index };
+pub const FnCall = struct {
+    name: []const u8,
+    args_start: Index,
+    args_len: Index,
+};
 
 pub const CondExpr = struct {
     then: Index,
@@ -550,19 +579,33 @@ pub const AssignStmt = struct { name: []const u8, value: Index };
 
 pub const FnDef = struct {
     name: []const u8,
-    def_args: []const Index,
-    body: []const Index,
+    args_start: Index,
+    args_len: Index,
+    body_start: Index,
+    body_len: Index,
 };
 
 pub const ReturnStmt = struct { value: Index };
 
 pub const ForStmt = struct {
-    var_name: []const u8,
+    variable: []const u8,
     iterable: Index,
-    body: []const Index,
+    body_start: Index,
+    body_len: Index,
 };
 
-pub const List = struct { elems: []const Index };
+pub const List = struct {
+    elems: []const Index,
+    const Self = @This();
+
+    pub fn init(gpa: Allocator, elems: *IndicesList) !Self {
+        return .{ .elems = try elems.toOwnedSlice(gpa) };
+    }
+
+    pub fn deinit(self: *const Self, gpa: Allocator) void {
+        gpa.free(self.elems);
+    }
+};
 
 pub const ListComp = struct {
     expr: Index,
@@ -570,11 +613,27 @@ pub const ListComp = struct {
     iterable: Index,
 };
 
-pub const Map = struct { keys: []const Index, values: []const Index };
+pub const Map = struct {
+    keys: []const Index,
+    values: []const Index,
+    const Self = @This();
+
+    pub fn init(gpa: Allocator, keys: *IndicesList, values: *IndicesList) !Self {
+        return .{
+            .keys = try keys.toOwnedSlice(gpa),
+            .values = try values.toOwnedSlice(gpa),
+        };
+    }
+
+    pub fn deinit(self: *const Self, gpa: Allocator) void {
+        gpa.free(self.keys);
+        gpa.free(self.values);
+    }
+};
 
 pub const IndexExpr = struct { target: Index, index: Index };
 
-pub const Indices = ArrayList(Index);
+pub const IndicesList = ArrayList(Index);
 pub const Index = u32;
 
 test {

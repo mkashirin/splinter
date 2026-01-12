@@ -7,6 +7,7 @@ const Node = Parser.Node;
 const NodeIndex = Parser.NodeIndex;
 const Renderer = @import("Renderer.zig");
 const Interpreter = @import("Interpreter.zig");
+const IValue = Interpreter.IValue;
 
 pub fn main() !void {
     var arena: std.heap.ArenaAllocator = .init(std.heap.page_allocator);
@@ -14,12 +15,39 @@ pub fn main() !void {
     const gpa = arena.allocator();
 
     const source =
-        // \\ 16 + 4 / [1, 2, 3][1];
-        \\ [1, 2, 3];
-        // \\ [1, 2, 3] + [4, 5, 6];
-        // \\ 1 + {"one": 1, "two": 2}["two"];
-        // \\ 1 == 2;
-        // \\ "2" + "2";
+        \\"b" in "abc";
+        // \\[1, 2, 3];
+        // \\{"one": 1, "two": 2};
+        //
+        // \\an_int = 4 / 2;
+        // \\the_int = 2^3;
+        // \\
+        // \\
+        // \\def add(a, b) {
+        // \\    sum = a + b;
+        // \\    return sum;
+        // \\}
+        // \\
+        // \\int_sum = add(a_int, the_int);
+        // \\print("Success") if c > 0 else print(0);
+        // \\
+        // \\0 if true and the_int - an_int else int_sum or "Huh?";
+        // \\
+        // \\a_list = [1, 2, 3];
+        // \\a_dict = {"integer": 1, "list": [2, 3]};
+        // \\the_list = [0, {"one": 1}, 2 + 3];
+        // \\
+        // \\zero = the_list[a_list[0]];
+        // \\
+        // \\for n in a_list {
+        // \\    print(n + 1);
+        // \\}
+        // \\
+        // \\zero_in_the_list = 0 in the_list;
+        // \\
+        // \\selector = Select([1, 2, 3], [3, 2, 1], !=);
+        // \\
+        // \\list_comp = [i + 1 if i > 0 else i for i in a_list];
     ;
 
     var tokenizer: Tokenizer = .init(source);
@@ -34,23 +62,21 @@ pub fn main() !void {
         parser.deinit();
         return err;
     };
-    std.debug.print("{any}\n", .{parser.nodes});
     defer tree.deinit(gpa);
 
     var buffer: [1024]u8 = undefined;
     const writer = std.Progress.lockStderrWriter(&buffer);
     defer std.Progress.unlockStderrWriter();
 
-    var renderer: Renderer = .init(writer, tree.nodes);
+    var renderer: Renderer = .init(writer, tree.nodes, tree.adpb);
     std.debug.print("Parsed AST (index-backed):\n", .{});
     for (tree.indices) |node| try renderer.render(node);
 
-    // var interpreter: Interpreter = .init(tree, gpa);
-    // std.debug.print(
-    //     "\n{any}\n{any}\n",
-    //     .{
-    //         tree.nodes[0],
-    //         (try interpreter.visitNode(tree.indices[0])).list.elems[0],
-    //     },
-    // );
+    var interpreter: Interpreter = .init(tree, gpa);
+    const ivalue = try interpreter.visitNode(2);
+    std.debug.print("{any}\n", .{ivalue});
+    // for (0..ivalue.list.elems.len) |i|
+    //     std.debug.print("{any}\n", .{ivalue.list.elems[i].*});
+    // const query = &IValue{ .string = "two" };
+    // std.debug.print("{any}\n", .{ivalue.map.get(@constCast(query))});
 }

@@ -3,14 +3,25 @@
 writer: *std.Io.Writer,
 nodes: []const Node,
 indent_level: u8,
+adpb: []const Index,
 const Renderer = @This();
+
 const INDENT_SIZE = 4;
 
-pub fn init(writer: *std.Io.Writer, nodes: []const Node) Renderer {
-    return .{ .writer = writer, .nodes = nodes, .indent_level = 0 };
+pub fn init(
+    writer: *std.Io.Writer,
+    nodes: []const Node,
+    adp: []const Index,
+) Renderer {
+    return .{
+        .writer = writer,
+        .nodes = nodes,
+        .indent_level = 0,
+        .adpb = adp,
+    };
 }
 
-pub fn render(r: *Renderer, root_index: NodeIndex) !void {
+pub fn render(r: *Renderer, root_index: Index) !void {
     try r.renderNode(root_index);
 }
 
@@ -31,28 +42,27 @@ fn print(
     try r.writer.print(format ++ "\n", args);
 }
 
-fn renderNode(r: *Renderer, index: NodeIndex) std.Io.Writer.Error!void {
+fn renderNode(r: *Renderer, index: Index) std.Io.Writer.Error!void {
+    try r.print("(#{d})", .{index});
     try switch (r.nodes[@intCast(index)]) {
-        // zig fmt: off
-        .boolean    => |boolean_| r.boolean(boolean_),
-        .int        => |int_| r.int(int_),
-        .string     => |string_| r.string(string_),
-        .ident      => |ident_| r.ident(ident_),
-        .list       => |list_| r.list(list_),
-        .list_comp  => |list_comp_| r.listComp(list_comp_),
-        .map        => |map_| r.map(map_),
+        .boolean => |boolean_| r.boolean(boolean_),
+        .int => |int_| r.int(int_),
+        .string => |string_| r.string(string_),
+        .ident => |ident_| r.ident(ident_),
+        .list => |list_| r.list(list_),
+        .list_comp => |list_comp| r.listComp(list_comp),
+        .map => |map_| r.map(map_),
 
-        .bin_expr   => |bin_expr_| r.binExpr(bin_expr_),
-        .cond_expr  => |cond_expr_| r.condExpr(cond_expr_),
-        .index_expr => |index_expr_| r.indexExpr(index_expr_),
+        .bin_expr => |bin_expr| r.binExpr(bin_expr),
+        .cond_expr => |cond_expr| r.condExpr(cond_expr),
+        .index_expr => |index_expr| r.indexExpr(index_expr),
 
-        .assign_stmt    => |assign_stmt_| r.assignStmt(assign_stmt_),
-        .return_stmt    => |return_stmt_| r.returnStmt(return_stmt_),
-        .fn_def         => |fn_def_| r.fnDef(fn_def_),
-        .fn_call        => |fn_call_| r.fnCall(fn_call_),
-        .bin_arg        => |bin_arg_| r.binArg(bin_arg_),
-        .for_stmt       => |for_stmt_| r.forStmt(for_stmt_),
-        // zig fmt: on
+        .assign_stmt => |assign_stmt| r.assignStmt(assign_stmt),
+        .fn_def => |fn_def| r.fnDef(fn_def),
+        .return_stmt => |return_stmt| r.returnStmt(return_stmt),
+        .fn_call => |fn_call| r.fnCall(fn_call),
+        .for_stmt => |for_stmt| r.forStmt(for_stmt),
+        .bin_arg => |bin_arg| r.binArg(bin_arg),
     };
 }
 
@@ -68,95 +78,8 @@ fn string(r: *Renderer, string_: []const u8) !void {
     try r.print("String(\"{s}\")", .{string_});
 }
 
-fn ident(r: *Renderer, idnet_: []const u8) !void {
-    try r.print("Identifier({s})", .{idnet_});
-}
-
-fn binExpr(r: *Renderer, bin_expr: ast.BinExpr) !void {
-    try r.print("BinExpr({s}):", .{bol.get(bin_expr.op)});
-    r.indent();
-    defer r.unindent();
-    try r.renderNode(bin_expr.lhs);
-    try r.renderNode(bin_expr.rhs);
-}
-
-fn condExpr(r: *Renderer, cond_expr: ast.CondExpr) !void {
-    try r.print("CondExpr:", .{});
-    r.indent();
-    defer r.unindent();
-
-    try r.print("Then:", .{});
-    {
-        r.indent();
-        defer r.unindent();
-        try r.renderNode(cond_expr.then);
-    }
-
-    try r.print("If:", .{});
-    {
-        r.indent();
-        defer r.unindent();
-        try r.renderNode(cond_expr.if_cond);
-    }
-
-    try r.print("Else:", .{});
-    {
-        r.indent();
-        defer r.unindent();
-        try r.renderNode(cond_expr.else_expr);
-    }
-}
-
-fn assignStmt(r: *Renderer, assign_stmt: ast.AssignStmt) !void {
-    try r.print("AssignStmt(name: {s}):", .{assign_stmt.name});
-    r.indent();
-    defer r.unindent();
-    try r.renderNode(assign_stmt.value);
-}
-
-fn returnStmt(r: *Renderer, return_stmt: ast.ReturnStmt) !void {
-    try r.print("ReturnStmt:", .{});
-    r.indent();
-    defer r.unindent();
-    try r.renderNode(return_stmt.value);
-}
-
-fn fnCall(r: *Renderer, fn_call: ast.FnCall) !void {
-    try r.print("FnCall(name: {s}):", .{fn_call.name});
-    r.indent();
-    defer r.unindent();
-
-    try r.print("Args:", .{});
-    r.indent();
-    defer r.unindent();
-    const end = fn_call.call_args.len;
-    for (0..end) |i| try r.renderNode(fn_call.call_args[i]);
-}
-
-fn fnDef(r: *Renderer, fn_def: ast.FnDef) !void {
-    try r.print("FnDef(name: {s})", .{fn_def.name});
-    r.indent();
-    defer r.unindent();
-
-    try r.print("Args:", .{});
-    {
-        r.indent();
-        defer r.unindent();
-        const end = fn_def.def_args.len;
-        // For FnDef args, the ADPB stores an index to a simple identifier node.
-        for (0..end) |i| {
-            const arg = r.nodes[@intCast(fn_def.def_args[i])];
-            try r.print("Arg: {s}", .{arg.ident});
-        }
-    }
-
-    try r.print("Body:", .{});
-    {
-        r.indent();
-        defer r.unindent();
-        const end = fn_def.body.len;
-        for (0..end) |i| try r.renderNode(fn_def.def_args[i]);
-    }
+fn ident(r: *Renderer, ident_: []const u8) !void {
+    try r.print("Identifier({s})", .{ident_});
 }
 
 fn list(r: *Renderer, list_: ast.List) !void {
@@ -206,6 +129,41 @@ fn map(r: *Renderer, map_: ast.Map) !void {
     }
 }
 
+fn binExpr(r: *Renderer, bin_expr: ast.BinExpr) !void {
+    try r.print("BinExpr({s}):", .{bol.get(bin_expr.op)});
+    r.indent();
+    defer r.unindent();
+    try r.renderNode(bin_expr.lhs);
+    try r.renderNode(bin_expr.rhs);
+}
+
+fn condExpr(r: *Renderer, cond_expr: ast.CondExpr) !void {
+    try r.print("CondExpr:", .{});
+    r.indent();
+    defer r.unindent();
+
+    try r.print("Then:", .{});
+    {
+        r.indent();
+        defer r.unindent();
+        try r.renderNode(cond_expr.then);
+    }
+
+    try r.print("If:", .{});
+    {
+        r.indent();
+        defer r.unindent();
+        try r.renderNode(cond_expr.if_cond);
+    }
+
+    try r.print("Else:", .{});
+    {
+        r.indent();
+        defer r.unindent();
+        try r.renderNode(cond_expr.else_expr);
+    }
+}
+
 fn indexExpr(r: *Renderer, index_expr: ast.IndexExpr) !void {
     try r.print("IndexExpr:", .{});
     r.indent();
@@ -226,8 +184,77 @@ fn indexExpr(r: *Renderer, index_expr: ast.IndexExpr) !void {
     }
 }
 
+fn assignStmt(r: *Renderer, assign_stmt: ast.AssignStmt) !void {
+    try r.print("AssignStmt(name: {s}):", .{assign_stmt.name});
+    r.indent();
+    defer r.unindent();
+    try r.renderNode(assign_stmt.value);
+}
+
+fn fnDef(r: *Renderer, fn_def: ast.FnDef) !void {
+    try r.print("FnDef(name: {s})", .{fn_def.name});
+    r.indent();
+    defer r.unindent();
+
+    try r.print("Args:", .{});
+    {
+        r.indent();
+        defer r.unindent();
+        const args_start: usize = @intCast(fn_def.args_start);
+        const args_end = args_start + @as(usize, fn_def.args_len);
+        var i: usize = args_start;
+        while (i < args_end) : (i += 1) {
+            const arg_node_index = r.adpb[i];
+            const arg_node = r.nodes[@intCast(arg_node_index)];
+            try r.print("Arg: {s}", .{arg_node.ident});
+        }
+    }
+
+    try r.print("Body:", .{});
+    {
+        r.indent();
+        defer r.unindent();
+        const body_start: usize = @intCast(fn_def.body_start);
+        const body_end = body_start + @as(usize, fn_def.body_len);
+        var i: usize = body_start;
+        while (i < body_end) : (i += 1) try r.renderNode(r.adpb[i]);
+    }
+}
+
+fn returnStmt(r: *Renderer, return_stmt: ast.ReturnStmt) !void {
+    try r.print("ReturnStmt:", .{});
+    r.indent();
+    defer r.unindent();
+    try r.renderNode(return_stmt.value);
+}
+
+fn fnCall(r: *Renderer, fn_call: ast.FnCall) !void {
+    try r.print("FnCall(name: {s}):", .{fn_call.name});
+    r.indent();
+    defer r.unindent();
+
+    try r.print("Args:", .{});
+    {
+        r.indent();
+        defer r.unindent();
+        const args_start: usize = @intCast(fn_call.args_start);
+        const args_end = args_start + @as(usize, fn_call.args_len);
+        var i: usize = args_start;
+        while (i < args_end) : (i += 1) {
+            const arg_node_index = r.adpb[i];
+            try r.print("Arg: {any}", .{r.renderNode(arg_node_index)});
+        }
+    }
+}
+
+fn binArg(r: *Renderer, bin_arg: ast.BinOp) !void {
+    try r.print("BinOp({s})", .{bol.get(bin_arg)});
+    r.indent();
+    defer r.unindent();
+}
+
 fn forStmt(r: *Renderer, for_stmt: ast.ForStmt) !void {
-    try r.print("ForStmt(var: {s}):", .{for_stmt.var_name});
+    try r.print("ForStmt(var: {s}):", .{for_stmt.variable});
     r.indent();
     defer r.unindent();
 
@@ -242,15 +269,11 @@ fn forStmt(r: *Renderer, for_stmt: ast.ForStmt) !void {
     {
         r.indent();
         defer r.unindent();
-        const end = for_stmt.body.len;
-        for (0..end) |i| try r.renderNode(for_stmt.body[i]);
+        const body_start: usize = @intCast(for_stmt.body_start);
+        const body_end = body_start + @as(usize, for_stmt.body_len);
+        var i: usize = body_start;
+        while (i < body_end) : (i += 1) try r.renderNode(r.adpb[i]);
     }
-}
-
-fn binArg(r: *Renderer, bin_arg: ast.BinOp) !void {
-    try r.print("BinOp({s})", .{bol.get(bin_arg)});
-    r.indent();
-    defer r.unindent();
 }
 
 const bol: std.enums.EnumArray(ast.BinOp, []const u8) = .init(.{
@@ -284,4 +307,4 @@ const Allocator = std.mem.Allocator;
 
 const ast = @import("ast.zig");
 const Node = ast.Node;
-const NodeIndex = ast.Index;
+const Index = ast.Index;

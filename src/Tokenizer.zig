@@ -84,7 +84,7 @@ pub fn next(t: *Tokenizer) Token {
             break :sw .less_or_equal_than;
         } else .less_than,
 
-        else => |c| std.enums.fromInt(Token.Tag, c) orelse .invalid,
+        else => |char| std.enums.fromInt(Token.Tag, char) orelse .invalid,
     };
 
     token.location = .{ .line = t.line, .column = t.column };
@@ -113,8 +113,8 @@ pub const Token = struct {
         comma           = ',',
         semicolon       = ';',
         colon           = ':',
-        equal           = '=',
 
+        equal           = '=',
         less_than       = '<',
         greater_than    = '>',
         // zig fmt: on
@@ -132,14 +132,14 @@ pub const Token = struct {
 
         keyword_true,
         keyword_false,
-        keyword_and,
-        keyword_or,
         keyword_if,
         keyword_else,
+        keyword_in,
+        keyword_and,
+        keyword_or,
         keyword_def,
         keyword_return,
         keyword_for,
-        keyword_in,
     };
 
     pub const Location = struct { line: usize, column: usize };
@@ -147,14 +147,14 @@ pub const Token = struct {
     pub const keywords: std.StaticStringMap(Tag) = .initComptime(.{
         .{ "true", .keyword_true },
         .{ "false", .keyword_false },
-        .{ "and", .keyword_and },
-        .{ "or", .keyword_or },
         .{ "if", .keyword_if },
         .{ "else", .keyword_else },
+        .{ "in", .keyword_in },
+        .{ "and", .keyword_and },
+        .{ "or", .keyword_or },
         .{ "def", .keyword_def },
         .{ "return", .keyword_return },
         .{ "for", .keyword_for },
-        .{ "in", .keyword_in },
     });
 
     pub fn keyword(bytes: []const u8) ?Tag {
@@ -178,8 +178,8 @@ fn step(t: *Tokenizer) void {
     t.index += 1;
 }
 
-fn match(t: *Tokenizer, character: u8) bool {
-    return t.source[t.index] == character;
+fn match(t: *Tokenizer, with: u8) bool {
+    return t.source[t.index] == with;
 }
 
 test {
