@@ -10,14 +10,18 @@ const Interpreter = @import("Interpreter.zig");
 const IValue = Interpreter.IValue;
 
 pub fn main() !void {
-    var arena: std.heap.ArenaAllocator = .init(std.heap.page_allocator);
-    defer arena.deinit();
-    const gpa = arena.allocator();
+    var da: std.heap.DebugAllocator(.{}) = .init;
+    defer _ = da.deinit();
+    const gpa = da.allocator();
 
     const source =
-        \\"b" in "abc";
+        // \\"b" in "abc";
         // \\[1, 2, 3];
         // \\{"one": 1, "two": 2};
+        // \\an_int = 4 / 2;
+        // \\an_int;
+        // \\one = 1 if true else 0;
+        // \\print([1, 2, 3]);
         //
         // \\an_int = 4 / 2;
         // \\the_int = 2^3;
@@ -28,20 +32,20 @@ pub fn main() !void {
         // \\    return sum;
         // \\}
         // \\
-        // \\int_sum = add(a_int, the_int);
+        // \\int_sum = add(2, 2);
         // \\print("Success") if c > 0 else print(0);
         // \\
         // \\0 if true and the_int - an_int else int_sum or "Huh?";
         // \\
-        // \\a_list = [1, 2, 3];
+        \\a_list = [1, 2, 3];
         // \\a_dict = {"integer": 1, "list": [2, 3]};
         // \\the_list = [0, {"one": 1}, 2 + 3];
         // \\
         // \\zero = the_list[a_list[0]];
         // \\
-        // \\for n in a_list {
-        // \\    print(n + 1);
-        // \\}
+        \\for n in a_list {
+        \\    print(n + 1);
+        \\}
         // \\
         // \\zero_in_the_list = 0 in the_list;
         // \\
@@ -72,8 +76,10 @@ pub fn main() !void {
     std.debug.print("Parsed AST (index-backed):\n", .{});
     for (tree.indices) |node| try renderer.render(node);
 
-    var interpreter: Interpreter = .init(tree, gpa);
-    const ivalue = try interpreter.visitNode(2);
+    var interpreter: Interpreter = try .init(tree, gpa);
+    defer interpreter.deinit(gpa);
+    _ = try interpreter.visitNode(5);
+    const ivalue = try interpreter.visitNode(11);
     std.debug.print("{any}\n", .{ivalue});
     // for (0..ivalue.list.elems.len) |i|
     //     std.debug.print("{any}\n", .{ivalue.list.elems[i].*});

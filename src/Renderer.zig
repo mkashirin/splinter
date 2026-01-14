@@ -51,7 +51,7 @@ fn renderNode(r: *Renderer, index: Index) std.Io.Writer.Error!void {
         .ident => |ident_| r.ident(ident_),
         .list => |list_| r.list(list_),
         .list_comp => |list_comp| r.listComp(list_comp),
-        .map => |map_| r.map(map_),
+        .hash_map => |hash_map| r.hashMap(hash_map),
 
         .bin_expr => |bin_expr| r.binExpr(bin_expr),
         .cond_expr => |cond_expr| r.condExpr(cond_expr),
@@ -62,7 +62,7 @@ fn renderNode(r: *Renderer, index: Index) std.Io.Writer.Error!void {
         .return_stmt => |return_stmt| r.returnStmt(return_stmt),
         .fn_call => |fn_call| r.fnCall(fn_call),
         .for_stmt => |for_stmt| r.forStmt(for_stmt),
-        .bin_arg => |bin_arg| r.binArg(bin_arg),
+        .op_arg => |op_arg| r.opArg(op_arg),
     };
 }
 
@@ -113,19 +113,19 @@ fn listComp(r: *Renderer, list_comp: ast.ListComp) !void {
     }
 }
 
-fn map(r: *Renderer, map_: ast.Map) !void {
-    try r.print("Map:", .{});
+fn hashMap(r: *Renderer, hash_map: ast.HashMap) !void {
+    try r.print("HashMap:", .{});
     r.indent();
     defer r.unindent();
 
-    const keys_end = map_.keys.len;
-    const values_end = map_.values.len;
+    const keys_end = hash_map.keys.len;
+    const values_end = hash_map.values.len;
     for (0..keys_end, 0..values_end) |i, j| {
         try r.print("Pair:", .{});
         r.indent();
         defer r.unindent();
-        try r.renderNode(map_.keys[i]);
-        try r.renderNode(map_.values[j]);
+        try r.renderNode(hash_map.keys[i]);
+        try r.renderNode(hash_map.values[j]);
     }
 }
 
@@ -206,7 +206,7 @@ fn fnDef(r: *Renderer, fn_def: ast.FnDef) !void {
         while (i < args_end) : (i += 1) {
             const arg_node_index = r.adpb[i];
             const arg_node = r.nodes[@intCast(arg_node_index)];
-            try r.print("Arg: {s}", .{arg_node.ident});
+            try r.print("{s}", .{arg_node.ident});
         }
     }
 
@@ -240,15 +240,12 @@ fn fnCall(r: *Renderer, fn_call: ast.FnCall) !void {
         const args_start: usize = @intCast(fn_call.args_start);
         const args_end = args_start + @as(usize, fn_call.args_len);
         var i: usize = args_start;
-        while (i < args_end) : (i += 1) {
-            const arg_node_index = r.adpb[i];
-            try r.print("Arg: {any}", .{r.renderNode(arg_node_index)});
-        }
+        while (i < args_end) : (i += 1) try r.renderNode(r.adpb[i]);
     }
 }
 
-fn binArg(r: *Renderer, bin_arg: ast.BinOp) !void {
-    try r.print("BinOp({s})", .{bol.get(bin_arg)});
+fn opArg(r: *Renderer, op_arg: ast.BinOp) !void {
+    try r.print("BinOp({s})", .{bol.get(op_arg)});
     r.indent();
     defer r.unindent();
 }

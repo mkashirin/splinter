@@ -147,7 +147,7 @@ pub const Parser = struct {
         self.step();
 
         try self.expect(.ident);
-        const var_name = self.current.lexeme.?;
+        const variable = self.current.lexeme.?;
         self.step();
 
         try self.expect(.keyword_in);
@@ -166,7 +166,7 @@ pub const Parser = struct {
         self.step();
 
         const for_stmt: ForStmt = .{
-            .variable = var_name,
+            .variable = variable,
             .iterable = iterable,
             .body_start = body_start,
             .body_len = body_len,
@@ -283,11 +283,11 @@ pub const Parser = struct {
             .ident => self.nameExpr(),
             .int_literal => self.intLiteral(),
             .string_literal => self.stringLiteral(),
-            .left_brace => self.mapLiteral(),
+            .left_brace => self.hashMapLiteral(),
             .left_bracket => self.listLiteral(),
             .left_paren => self.boxedExpr(),
 
-            .keyword_true, .keyword_false => self.boolLiteral(),
+            .keyword_true, .keyword_false => self.booleanLiteral(),
             else => self.fail(.{ .description = "expression" }),
         };
         primary = try self.indexExpr(primary);
@@ -329,7 +329,7 @@ pub const Parser = struct {
                 if (!std.mem.eql(u8, name, "Select") or arg_count != 2)
                     return self.fail(.{ .description = "bin comp" });
 
-                const bin_arg: BinOp = switch (self.current.tag) {
+                const op_arg: BinOp = switch (self.current.tag) {
                     .double_equal => .equal,
                     .bang_equal => .not_equal,
                     .greater_than => .greater_than,
@@ -341,7 +341,7 @@ pub const Parser = struct {
                 };
                 self.step();
 
-                break :blk try self.push(.{ .bin_arg = bin_arg });
+                break :blk try self.push(.{ .op_arg = op_arg });
             };
             try self.adpb.append(self.gpa, arg);
 
@@ -375,7 +375,7 @@ pub const Parser = struct {
         return index;
     }
 
-    fn boolLiteral(self: *Self) !Index {
+    fn booleanLiteral(self: *Self) !Index {
         const index = switch (self.current.tag) {
             .keyword_true => self.push(.{ .boolean = true }),
             .keyword_false => self.push(.{ .boolean = false }),
@@ -423,7 +423,7 @@ pub const Parser = struct {
         return self.push(.{ .list_comp = list_comp });
     }
 
-    fn mapLiteral(self: *Self) !Index {
+    fn hashMapLiteral(self: *Self) !Index {
         self.step();
         var keys, var values = .{ IndicesList.empty, IndicesList.empty };
         errdefer {
@@ -443,8 +443,8 @@ pub const Parser = struct {
             self.step();
         }
         self.step();
-        const map: Map = try .init(self.gpa, &keys, &values);
-        return self.push(.{ .map = map });
+        const hash_map: HashMap = try .init(self.gpa, &keys, &values);
+        return self.push(.{ .hash_map = hash_map });
     }
 
     fn push(self: *Self, node: Node) Allocator.Error!Index {
@@ -508,13 +508,11 @@ pub const Tree = struct {
     }
 
     pub fn deinit(self: *Self, gpa: Allocator) void {
-        for (self.nodes) |node| {
-            switch (node) {
-                .map => |*map| map.deinit(gpa),
-                .list => |*list| list.deinit(gpa),
-                else => {},
-            }
-        }
+        for (self.nodes) |node| switch (node) {
+            .list => |*list| list.deinit(gpa),
+            .hash_map => |*hash_map| hash_map.deinit(gpa),
+            else => {},
+        };
         gpa.free(self.indices);
         gpa.free(self.nodes);
         gpa.free(self.adpb);
@@ -529,7 +527,7 @@ pub const Node = union(enum) {
     ident: []const u8,
     list: List,
     list_comp: ListComp,
-    map: Map,
+    hash_map: HashMap,
 
     bin_expr: BinExpr,
     cond_expr: CondExpr,
@@ -539,7 +537,7 @@ pub const Node = union(enum) {
     fn_def: FnDef,
     return_stmt: ReturnStmt,
     fn_call: FnCall,
-    bin_arg: BinOp,
+    op_arg: BinOp,
     for_stmt: ForStmt,
 };
 
@@ -613,7 +611,7 @@ pub const ListComp = struct {
     iterable: Index,
 };
 
-pub const Map = struct {
+pub const HashMap = struct {
     keys: []const Index,
     values: []const Index,
     const Self = @This();
