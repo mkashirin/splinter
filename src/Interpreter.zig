@@ -1,7 +1,7 @@
-// FIXME: Fix the segmentation fault drama.
-
+/// Tree usually gets deinitilized by the `defer` statement inside of `main()`.
 tree: Tree,
-gpa: Allocator,
+/// Arena is required to avoid the unnecessary complexity of the MMM here.
+arena: Allocator,
 global: Table,
 local: Table,
 return_value: IValue = .none,
@@ -10,7 +10,7 @@ const Interpreter = @This();
 
 pub fn walkTree(i: *Interpreter) !IValue {
     for (i.tree.indices) |stmt_index| {
-        i.last_value.clear(i.gpa);
+        i.last_value.clear();
 
         i.last_value = i.visitNode(stmt_index) catch |err| switch (err) {
             error.ReturnTrigger => {
@@ -25,14 +25,14 @@ pub fn walkTree(i: *Interpreter) !IValue {
     return i.last_value;
 }
 
-pub fn init(tree: Tree, gpa: Allocator) !Interpreter {
+pub fn init(tree: Tree, arena: Allocator) !Interpreter {
     var i: Interpreter = .{
         .tree = tree,
-        .gpa = gpa,
-        .global = .init(gpa),
-        .local = .init(gpa),
+        .arena = arena,
+        .global = .init(arena),
+        .local = .init(arena),
     };
-    const print_builtin: *IValue = try .init(i.gpa);
+    const print_builtin: *IValue = try .create(i.arena);
     print_builtin.* = .{ .builtin = builtinPrint };
     try i.global.put("print", print_builtin);
     return i;
@@ -43,8 +43,7 @@ pub fn deinit(i: *Interpreter) void {
         var global_it = i.global.valueIterator();
         while (global_it.next()) |value_ptr| {
             const ivalue_ptr = value_ptr.*;
-            std.debug.print("Deiniting from globals: {any}\n", .{ivalue_ptr.*});
-            ivalue_ptr.deinit(i.gpa);
+            ivalue_ptr.clearAndDestroy(i.arena);
         }
     }
     i.global.deinit();
@@ -53,15 +52,10 @@ pub fn deinit(i: *Interpreter) void {
         var local_it = i.local.valueIterator();
         while (local_it.next()) |value_ptr| {
             const ivalue_ptr = value_ptr.*;
-            std.debug.print("Deiniting from locals: {any}\n", .{ivalue_ptr.*});
-            ivalue_ptr.deinit(i.gpa);
+            ivalue_ptr.clearAndDestroy(i.arena);
         }
     }
     i.local.deinit();
-
-    // var last_value = i.last_value.?;
-    // std.debug.print("Last value: {any}\n", .{i.last_value});
-    // i.last_value.clear(i.gpa);
 }
 
 const IValuesList = std.ArrayList(*IValue);
@@ -74,32 +68,28 @@ pub const IValue = union(enum) {
     hash_map: HashMap,
     none: void,
     builtin: *const fn (*Interpreter, []*IValue) anyerror!IValue,
-    function: u32,
+    fn_index: u32,
     const Self = @This();
 
-    pub fn init(gpa: Allocator) !*Self {
+    pub fn create(gpa: Allocator) !*Self {
         return gpa.create(Self);
     }
 
-    pub fn clear(self: *Self, gpa: Allocator) void {
-        switch (self.*) {
-            .list => |*list| list.deinit(gpa),
-            .hash_map => |*hash_map| hash_map.deinit(gpa),
-            else => self.* = .none,
-        }
+    pub fn clear(self: *Self) void {
+        self.* = .none;
     }
 
     pub fn clone(self: *Self, gpa: Allocator) !Self {
         return switch (self) {
+            .string => |string| .{ .string = try gpa.dupe(u8, string.string) },
             .list => |list| .{ .list = try list.clone(gpa) },
-            .hash_map => |hash_map| .{ .hash_map = try hash_map.clone(gpa) },
+            .hash_map => |hash_map| .{ .hash_map = try hash_map.clone() },
             else => self,
         };
     }
 
-    pub fn deinit(self: *Self, gpa: Allocator) void {
-        std.debug.print("Called deinit on value: {any}\n", .{self});
-        self.clear(gpa);
+    pub fn clearAndDestroy(self: *Self, gpa: Allocator) void {
+        self.clear();
         gpa.destroy(self);
     }
 };
@@ -108,7 +98,7 @@ const List = struct {
     elems: []const *IValue,
     const Self = @This();
 
-    pub fn init(gpa: Allocator, elems: *IValuesList) !Self {
+    pub fn fromIValuesList(gpa: Allocator, elems: *IValuesList) !Self {
         return .{ .elems = try elems.toOwnedSlice(gpa) };
     }
 
@@ -117,36 +107,31 @@ const List = struct {
     }
 
     pub fn clone(self: *Self, gpa: Allocator) !Self {
-        const new_elems = try gpa.alloc(*IValue, self.elems.len);
-        errdefer gpa.free(new_elems);
-        for (self.elems, 0..) |elem, i| {
-            new_elems[i] = try IValue.init(gpa);
-            new_elems[i].* = try elem.clone(gpa);
-        }
-        return .{ .elems = new_elems };
+        var elems = try IValuesList.initCapacity(gpa, self.elems.len);
+        for (self.elems) |elem| elems.appendAssumeCapacity(elem);
+        return .fromIValuesList(gpa, &elems);
     }
 
-    pub fn deinit(self: *Self, gpa: Allocator) void {
-        for (self.elems) |elem| elem.deinit(gpa);
-        gpa.free(self.elems);
+    pub fn clear(self: *Self, gpa: Allocator) void {
+        for (self.elems) |elem| elem.clearAndDestroy(gpa);
     }
 };
 
 const HashMap = struct {
-    inner: std.HashMap(*IValue, *IValue, Context, 80),
+    inner: std.HashMap(IValue, IValue, Context, 80),
     const Self = @This();
 
     const Context = struct {
-        pub fn hash(self: Context, key: *IValue) u64 {
+        pub fn hash(self: Context, key: IValue) u64 {
             _ = self;
             var hasher = std.hash.Wyhash.init(0);
-            deepHash(&hasher, key.*);
+            deepHash(&hasher, key);
             return hasher.final();
         }
 
-        pub fn eql(self: Context, a: *IValue, b: *IValue) bool {
+        pub fn eql(self: Context, a: IValue, b: IValue) bool {
             _ = self;
-            return deepEqual(a.*, b.*);
+            return deepEqual(a, b);
         }
 
         fn deepHash(hasher: anytype, ivalue: IValue) void {
@@ -175,56 +160,32 @@ const HashMap = struct {
         keys: *IValuesList,
         values: *IValuesList,
     ) !Self {
-        var inner: std.HashMap(*IValue, *IValue, Context, 80) =
+        var inner: std.HashMap(IValue, IValue, Context, 80) =
             .init(gpa);
-        for (keys.items, values.items) |key, value| try inner.put(key, value);
+        for (keys.items, values.items) |key, value|
+            try inner.put(key.*, value.*);
         keys.deinit(gpa);
         values.deinit(gpa);
         return .{ .inner = inner };
     }
 
-    pub fn get(self: *Self, key: *IValue) ?*IValue {
+    pub fn get(self: *Self, key: IValue) ?IValue {
         return self.inner.get(key);
     }
 
-    pub fn put(self: *Self, key: *IValue) !void {
+    pub fn put(self: *Self, key: IValue) !void {
         return self.inner.put(key);
     }
 
-    pub fn clone(self: Self, gpa: Allocator) !Self {
-        var new_hash_map: Self = .{ .inner = .init(gpa) };
-        errdefer new_hash_map.deinit(gpa);
-        try new_hash_map.inner.ensureTotalCapacity(self.inner.count());
-
-        var it = self.inner.iterator();
-        while (it.next()) |entry| {
-            const old_key_ptr = entry.key_ptr.*;
-            const old_value_ptr = entry.value_ptr.*;
-
-            const new_key_ptr = try IValue.init(gpa);
-            errdefer gpa.destroy(new_key_ptr);
-            new_key_ptr.* = try old_key_ptr.clone(gpa);
-
-            const new_value_ptr = try IValue.init(gpa);
-            errdefer new_key_ptr.deinit(gpa);
-            errdefer gpa.destroy(new_value_ptr);
-            new_value_ptr.* = try old_value_ptr.clone(gpa);
-
-            new_hash_map.inner.putAssumeCapacity(new_key_ptr, new_value_ptr);
-        }
-        return new_hash_map;
+    pub fn clone(self: *Self) !Self {
+        return .{ .inner = self.inner.clone() };
     }
 
-    pub fn deinit(self: *Self, gpa: Allocator) void {
-        var it = self.inner.iterator();
-        while (it.next()) |entry| {
-            const key_ivalue_ptr = entry.key_ptr.*;
-            key_ivalue_ptr.clear(gpa);
-
-            const value_ivalue_ptr = entry.key_ptr.*;
-            value_ivalue_ptr.clear(gpa);
-        }
-        self.inner.deinit();
+    /// This would not destroy any keys or values, since these are managed by
+    /// the Arena (which backs the interpreter).
+    pub fn clearAndDestroy(self: *Self) void {
+        self.inner.clearAndFree();
+        self.* = .none;
     }
 };
 
@@ -249,7 +210,7 @@ fn deepEqual(lhs: IValue, rhs: IValue) bool {
                 const rhs_pair = rhs_it.next().?;
                 const pair_key, const rhs_pair_key =
                     .{ pair.key_ptr.*, rhs_pair.key_ptr.* };
-                if (!deepEqual(pair_key.*, rhs_pair_key.*)) return false;
+                if (!deepEqual(pair_key, rhs_pair_key)) return false;
             }
             return true;
         },
@@ -262,7 +223,6 @@ pub fn visitNode(i: *Interpreter, index: Index) anyerror!IValue {
     const res: IValue = switch (node) {
         .int => |int| .{ .int = int },
         .string => |string| .{ .string = string },
-        // .string => |string| .{ .string = try i.gpa.dupe(u8, string) },
         .boolean => |boolean| .{ .boolean = boolean },
         .ident => |ident| return (try i.getVar(ident)).*,
         .list => |list| .{ .list = try i.listLiteral(list) },
@@ -286,12 +246,9 @@ pub fn visitNode(i: *Interpreter, index: Index) anyerror!IValue {
 
 fn listLiteral(i: *Interpreter, list: ast.List) !List {
     const len = list.elems.len;
-    var elems = try i.gpa.alloc(*IValue, len);
-    errdefer {
-        i.gpa.free(elems);
-    }
+    var elems = try i.arena.alloc(*IValue, len);
     for (0.., list.elems) |j, elem| {
-        elems[j] = try .init(i.gpa);
+        elems[j] = try .create(i.arena);
         elems[j].* = try i.visitNode(elem);
     }
     return .{ .elems = elems };
@@ -299,36 +256,29 @@ fn listLiteral(i: *Interpreter, list: ast.List) !List {
 
 fn hashMapLiteral(i: *Interpreter, hash_map: ast.HashMap) !HashMap {
     const len = hash_map.keys.len;
-    var keys = try IValuesList.initCapacity(i.gpa, len);
-    var values = try IValuesList.initCapacity(i.gpa, len);
-    errdefer {
-        for (keys.items) |item| item.deinit(i.gpa);
-        keys.deinit(i.gpa);
-
-        for (values.items) |item| item.deinit(i.gpa);
-        values.deinit(i.gpa);
-    }
+    var keys = try IValuesList.initCapacity(i.arena, len);
+    var values = try IValuesList.initCapacity(i.arena, len);
     for (hash_map.keys, hash_map.values) |key, value| {
-        const key_visited_ptr = try IValue.init(i.gpa);
+        const key_visited_ptr = try IValue.create(i.arena);
         key_visited_ptr.* = try i.visitNode(key);
         keys.appendAssumeCapacity(@constCast(key_visited_ptr));
 
-        const value_visited_ptr = try IValue.init(i.gpa);
+        const value_visited_ptr = try IValue.create(i.arena);
         value_visited_ptr.* = try i.visitNode(value);
         values.appendAssumeCapacity(@constCast(value_visited_ptr));
     }
-    return .init(i.gpa, &keys, &values);
+    return .init(i.arena, &keys, &values);
 }
 
 fn binExpr(i: *Interpreter, node: ast.BinExpr) anyerror!IValue {
     var lhs = try i.visitNode(node.lhs);
-    defer lhs.clear(i.gpa);
+    defer lhs.clear();
 
     var rhs = try i.visitNode(node.rhs);
-    defer rhs.clear(i.gpa);
+    defer rhs.clear();
 
     const f = &switch (node.op) {
-        .add => return add(i.gpa, lhs, rhs),
+        .add => return add(i.arena, lhs, rhs),
 
         .subtr => subtr,
         .mult => mult,
@@ -351,7 +301,7 @@ fn binExpr(i: *Interpreter, node: ast.BinExpr) anyerror!IValue {
 }
 
 fn add(gpa: Allocator, lhs: IValue, rhs: IValue) !IValue {
-    try checkTypeCompat(lhs, rhs);
+    // try checkTypeCompat(.add, lhs, rhs);
 
     const res: IValue = switch (activeTag(lhs)) {
         .int => .{ .int = lhs.int + rhs.int },
@@ -371,7 +321,7 @@ fn add(gpa: Allocator, lhs: IValue, rhs: IValue) !IValue {
 }
 
 fn subtr(lhs: IValue, rhs: IValue) !IValue {
-    try checkTypeCompat(lhs, rhs);
+    // try checkTypeCompat(.subtr, lhs, rhs);
 
     const res: IValue = switch (activeTag(lhs)) {
         .int => .{ .int = lhs.int - rhs.int },
@@ -389,7 +339,7 @@ fn mult(lhs: IValue, rhs: IValue) !IValue {
 }
 
 fn div(lhs: IValue, rhs: IValue) !IValue {
-    try checkTypeCompat(lhs, rhs);
+    // try checkTypeCompat(.div, lhs, rhs);
 
     const res: IValue = switch (activeTag(lhs)) {
         .int => .{ .int = @divFloor(lhs.int, rhs.int) },
@@ -399,7 +349,7 @@ fn div(lhs: IValue, rhs: IValue) !IValue {
 }
 
 fn power(lhs: IValue, rhs: IValue) !IValue {
-    try checkTypeCompat(lhs, rhs);
+    // try checkTypeCompat(.power, lhs, rhs);
 
     const res: IValue = switch (activeTag(lhs)) {
         .int => .{ .int = lhs.int ^ rhs.int },
@@ -413,7 +363,7 @@ fn notEqual(lhs: IValue, rhs: IValue) !IValue {
 }
 
 fn lessThan(lhs: IValue, rhs: IValue) !IValue {
-    try checkTypeCompat(lhs, rhs);
+    // try checkTypeCompat(.less_than, lhs, rhs);
 
     return switch (activeTag(lhs)) {
         .int => .{ .boolean = lhs.int < rhs.int },
@@ -422,7 +372,7 @@ fn lessThan(lhs: IValue, rhs: IValue) !IValue {
 }
 
 fn lessOrEqualThan(lhs: IValue, rhs: IValue) !IValue {
-    try checkTypeCompat(lhs, rhs);
+    // try checkTypeCompat(.less_or_equal_than, lhs, rhs);
 
     return switch (activeTag(lhs)) {
         .int => .{ .boolean = lhs.int <= rhs.int },
@@ -431,7 +381,7 @@ fn lessOrEqualThan(lhs: IValue, rhs: IValue) !IValue {
 }
 
 fn greaterThan(lhs: IValue, rhs: IValue) !IValue {
-    try checkTypeCompat(lhs, rhs);
+    // try checkTypeCompat(.greater_than, lhs, rhs);
 
     return switch (activeTag(lhs)) {
         .int => .{ .boolean = lhs.int > rhs.int },
@@ -440,7 +390,7 @@ fn greaterThan(lhs: IValue, rhs: IValue) !IValue {
 }
 
 fn greaterOrEqualThan(lhs: IValue, rhs: IValue) !IValue {
-    try checkTypeCompat(lhs, rhs);
+    // try checkTypeCompat(.greater_or_equal_than, lhs, rhs);
 
     return switch (activeTag(lhs)) {
         .int => .{ .boolean = lhs.int >= rhs.int },
@@ -449,19 +399,19 @@ fn greaterOrEqualThan(lhs: IValue, rhs: IValue) !IValue {
 }
 
 fn logicAnd(lhs: IValue, rhs: IValue) !IValue {
-    try checkTypeCompat(lhs, rhs);
+    // try checkTypeCompat(.logic_and, lhs, rhs);
 
     return (if (!isTruthy(lhs)) lhs else rhs);
 }
 
 fn logicOr(lhs: IValue, rhs: IValue) !IValue {
-    try checkTypeCompat(lhs, rhs);
+    // try checkTypeCompat(.logic_or, lhs, rhs);
 
     return (if (isTruthy(lhs)) lhs else rhs);
 }
 
 fn isIn(lhs: IValue, rhs: IValue) !IValue {
-    try checkTypeCompat(lhs, rhs);
+    // try checkTypeCompat(.is_in, lhs, rhs);
 
     const result = switch (rhs) {
         .string => |str| {
@@ -479,8 +429,8 @@ fn isIn(lhs: IValue, rhs: IValue) !IValue {
             return .{ .boolean = false };
         },
         .hash_map => |hash_map| {
-            var key = lhs;
-            return .{ .boolean = hash_map.inner.contains(&key) };
+            const key = lhs;
+            return .{ .boolean = hash_map.inner.contains(key) };
         },
         else => return error.UnsupportedType,
     };
@@ -488,10 +438,24 @@ fn isIn(lhs: IValue, rhs: IValue) !IValue {
     return result;
 }
 
-fn checkTypeCompat(lhs: IValue, rhs: IValue) !void {
+// TODO: More sophisticated checks for each specific binary operation.
+fn _checkTypeCompat(op: ast.BinOp, lhs: IValue, rhs: IValue) !void {
     @branchHint(.cold);
-    if (activeTag(lhs) != activeTag(rhs))
-        return error.TypeMismatch;
+    return switch (op) {
+        .add,
+        .subtr,
+        .power,
+        .div,
+        .equal,
+        .not_equal,
+        .greater_than,
+        .greater_or_equal_than,
+        .less_than,
+        .less_or_equal_than,
+        => if (activeTag(lhs) != activeTag(rhs))
+            return error.TypeMismatch,
+        .mult, .logic_and, .logic_or, .is_in => {},
+    };
 }
 
 fn condExpr(i: *Interpreter, node: ast.CondExpr) !IValue {
@@ -514,23 +478,17 @@ fn isTruthy(ivalue: IValue) bool {
 }
 
 fn indexExpr(i: *Interpreter, node: ast.IndexExpr) !IValue {
-    const target: Node = i.tree.nodes[@intCast(node.target)];
+    // const target: Node = i.tree.nodes[@intCast(node.target)];
+    var target = try i.visitNode(node.target);
     switch (target) {
-        .hash_map => |hash_map| {
+        .hash_map => |*hash_map| {
             const key = try i.visitNode(node.index);
-            for (0..hash_map.keys.len) |j| {
-                const index = try i.visitNode(hash_map.keys[j]);
-                const keys_match =
-                    try equal(key, index);
-                if (keys_match.boolean)
-                    return i.visitNode(hash_map.values[j]);
-            }
-            return error.NoSuchKey;
+            return hash_map.get(key) orelse .none;
         },
-        .list => |list| {
+        .list => |*list| {
             const index = try i.visitNode(node.index);
             if (index.int >= list.elems.len) return error.IndexOutOfBounds;
-            return i.visitNode(list.elems[@intCast(index.int)]);
+            return list.get(@intCast(index.int));
         },
         else => return error.UnsupportedType,
     }
@@ -547,7 +505,7 @@ fn assignStmt(i: *Interpreter, assign_stmt: ast.AssignStmt) !IValue {
 }
 
 fn fnDef(i: *Interpreter, index: Index, fn_def: ast.FnDef) !IValue {
-    const function: IValue = .{ .function = index };
+    const function: IValue = .{ .fn_index = index };
     try i.setVar(fn_def.name, function);
     return .none;
 }
@@ -566,47 +524,31 @@ fn fnCall(i: *Interpreter, fn_call: ast.FnCall) !IValue {
         return err;
     };
     const function = fn_ptr.*;
-    var evaled_args = try std.ArrayList(*IValue).initCapacity(
-        i.gpa,
+    var evaled_args = try IValuesList.initCapacity(
+        i.arena,
         fn_call.args_len,
     );
-    defer {
-        for (evaled_args.items) |item| item.deinit(i.gpa);
-        evaled_args.deinit(i.gpa);
-    }
 
     for (0..fn_call.args_len) |offset| {
         const arg_node_index =
             i.tree.adpb[@intCast(fn_call.args_start + offset)];
 
-        const ivalue_ptr = try IValue.init(i.gpa);
-        errdefer ivalue_ptr.deinit(i.gpa);
+        const ivalue_ptr = try IValue.create(i.arena);
         ivalue_ptr.* = try i.visitNode(arg_node_index);
         evaled_args.appendAssumeCapacity(ivalue_ptr);
     }
 
     return switch (function) {
         .builtin => |builtin| try builtin(i, evaled_args.items),
-        .function => |fn_index| {
+        .fn_index => |fn_index| {
             const fn_def = i.tree.nodes[fn_index].fn_def;
 
             const caller_local = i.local;
-            i.local = Table.init(i.gpa);
-
-            defer {
-                if (i.local.count() > 0) {
-                    var local_it = i.local.valueIterator();
-                    while (local_it.next()) |value_ptr| {
-                        const ivalue_ptr = value_ptr.*;
-                        ivalue_ptr.deinit(i.gpa);
-                    }
-                }
-                i.local.deinit();
-                i.local = caller_local;
-            }
+            i.local = Table.init(i.arena);
+            defer i.local = caller_local;
 
             if (evaled_args.items.len != fn_def.args_len)
-                return error.ArgumentCountMismatch;
+                return error.ArgCountMismatch;
 
             for (0..fn_def.args_len) |offset| {
                 const param_node_index =
@@ -624,12 +566,10 @@ fn fnCall(i: *Interpreter, fn_call: ast.FnCall) !IValue {
 fn forStmt(i: *Interpreter, for_stmt: ast.ForStmt) !IValue {
     const iterable = try i.visitNode(for_stmt.iterable);
     const variable = for_stmt.variable;
-    std.debug.print("For it: {any}\n", .{iterable});
     const start, const len = .{ for_stmt.body_start, for_stmt.body_len };
 
     switch (iterable) {
         .list => |list| {
-            std.debug.print("List len: {d}\n", .{list.elems.len});
             for (list.elems) |elem_ptr| {
                 try i.setVar(variable, elem_ptr.*);
                 _ = try i.execBlock(start, len);
@@ -644,12 +584,11 @@ fn forStmt(i: *Interpreter, for_stmt: ast.ForStmt) !IValue {
         .hash_map => |hash_map| {
             var it = hash_map.inner.keyIterator();
             while (it.next()) |key_ptr| {
-                const ivalue_ptr = key_ptr.*;
-                try i.setVar(variable, ivalue_ptr.*);
+                try i.setVar(variable, key_ptr.*);
                 _ = try i.execBlock(start, len);
             }
         },
-        .int, .boolean, .none, .function, .builtin => return error.TypeError,
+        .int, .boolean, .none, .fn_index, .builtin => return error.TypeError,
     }
 
     return .none;
@@ -678,7 +617,6 @@ pub fn getVar(i: *Interpreter, name: []const u8) !*IValue {
     if (i.local.get(name)) |ivalue_ptr|
         return ivalue_ptr
     else if (i.global.get(name)) |ivalue_ptr| return ivalue_ptr;
-    std.debug.print("Could not find: {s}\n", .{name});
     return error.NoDefinitionFound;
 }
 
@@ -687,8 +625,8 @@ pub fn setVar(i: *Interpreter, name: []const u8, ivalue: IValue) !void {
 
     if (entry.found_existing) {
         const ivalue_ptr = entry.value_ptr.*;
-        ivalue_ptr.clear(i.gpa);
-    } else entry.value_ptr.* = try IValue.init(i.gpa);
+        ivalue_ptr.clear();
+    } else entry.value_ptr.* = try IValue.create(i.arena);
 
     const ivalue_ptr = entry.value_ptr.*;
     ivalue_ptr.* = ivalue;
@@ -716,6 +654,16 @@ fn builtinPrint(i: *Interpreter, args: []*IValue) anyerror!IValue {
     }
     std.debug.print("\n", .{});
     return .{ .boolean = true };
+}
+
+pub fn builtinSelect(i: *Interpreter, args: []*IValue) !IValue {
+    _ = i;
+    _ = args;
+}
+
+fn builtinAggregate(i: *Interpreter, args: []*IValue) !IValue {
+    _ = i;
+    _ = args;
 }
 
 const std = @import("std");

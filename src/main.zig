@@ -1,4 +1,5 @@
 const std = @import("std");
+const heap = std.heap;
 
 const Tokenizer = @import("Tokenizer.zig");
 const ast = @import("ast.zig");
@@ -10,18 +11,34 @@ const Interpreter = @import("Interpreter.zig");
 const IValue = Interpreter.IValue;
 
 pub fn main() !void {
-    // var da: std.heap.DebugAllocator(.{}) = .init;
-    // defer _ = da.deinit();
-    // const gpa = da.allocator();
-    var arena: std.heap.ArenaAllocator = .init(std.heap.page_allocator);
+    var arena: heap.ArenaAllocator = .init(heap.page_allocator);
     defer arena.deinit();
     const gpa = arena.allocator();
 
     const source =
+        \\an_int = 1;
+        \\the_int = 2;
+        \\
+        \\
+        \\def add(a, b) {
+        \\    sum = a + b;
+        \\    return sum;
+        \\}
+        \\
+        \\
+        \\int_sum = add(an_int, the_int);
+        \\print("Success") if an_int > 0 else print(0);
+        \\
         \\a_list = [1, 2, 3];
+        \\a_dict = {"integer": 1, "list": [2, 3]};
+        \\the_list = [0, {"one": 1}, 2 + 3];
+        \\
+        \\zero = the_list[a_list[0]];
         \\for n in a_list {
         \\    print(n + 1);
         \\}
+        \\
+        \\print(zero in the_list);
     ;
 
     var tokenizer: Tokenizer = .init(source);
@@ -50,5 +67,4 @@ pub fn main() !void {
     defer interpreter.deinit();
     const ivalue = try interpreter.walkTree();
     _ = ivalue;
-    // std.debug.print("{any}\n", .{ivalue.list.elems[0]});
 }
