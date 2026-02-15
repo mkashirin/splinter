@@ -79,7 +79,7 @@ fn string(r: *Renderer, string_: []const u8) !void {
 }
 
 fn ident(r: *Renderer, ident_: []const u8) !void {
-    try r.print("Identifier({s})", .{ident_});
+    try r.print("Ident({s})", .{ident_});
 }
 
 fn list(r: *Renderer, list_: ast.List) !void {

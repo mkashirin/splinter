@@ -16,29 +16,7 @@ pub fn main() !void {
     const gpa = arena.allocator();
 
     const source =
-        \\an_int = 1;
-        \\the_int = 2;
-        \\
-        \\
-        \\def add(a, b) {
-        \\    sum = a + b;
-        \\    return sum;
-        \\}
-        \\
-        \\
-        \\int_sum = add(an_int, the_int);
-        \\print("Success") if an_int > 0 else print(0);
-        \\
-        \\a_list = [1, 2, 3];
-        \\a_dict = {"integer": 1, "list": [2, 3]};
-        \\the_list = [0, {"one": 1}, 2 + 3];
-        \\
-        \\zero = the_list[a_list[0]];
-        \\for n in a_list {
-        \\    print(n + 1);
-        \\}
-        \\
-        \\print(zero in the_list);
+        \\selected = Select([1, 2, 2], [0, 1, 2], >);
     ;
 
     var tokenizer: Tokenizer = .init(source);
@@ -55,16 +33,24 @@ pub fn main() !void {
     };
     defer tree.deinit(gpa);
 
-    var buffer: [1024]u8 = undefined;
-    const writer = std.Progress.lockStderrWriter(&buffer);
-    defer std.Progress.unlockStderrWriter();
+    // var buffer: [1024]u8 = undefined;
+    // const writer = std.Progress.lockStderrWriter(&buffer);
+    // defer std.Progress.unlockStderrWriter();
 
-    var renderer: Renderer = .init(writer, tree.nodes, tree.adpb);
-    std.debug.print("Parsed AST (index-backed):\n", .{});
-    for (tree.indices) |node| try renderer.render(node);
+    // var renderer: Renderer = .init(writer, tree.nodes, tree.adpb);
+    // std.debug.print("Parsed AST (index-backed):\n", .{});
+    // for (tree.indices) |node| try renderer.render(node);
 
     var interpreter: Interpreter = try .init(tree, gpa);
     defer interpreter.deinit();
     const ivalue = try interpreter.walkTree();
-    _ = ivalue;
+    for (0..ivalue.imatrix.rows) |row| {
+        for (0..ivalue.imatrix.columns) |column| {
+            const elem = ivalue.imatrix.get(@intCast(row), @intCast(column));
+            std.debug.print(
+                "({d}, {d}): {}\n",
+                .{ row, column, elem.boolean },
+            );
+        }
+    }
 }

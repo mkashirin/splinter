@@ -35,6 +35,10 @@ pub fn init(tree: Tree, arena: Allocator) !Interpreter {
     const print_builtin: *IValue = try .create(i.arena);
     print_builtin.* = .{ .builtin = builtinPrint };
     try i.global.put("print", print_builtin);
+
+    const select_builtin: *IValue = try .create(i.arena);
+    select_builtin.* = .{ .builtin = builtinSelect };
+    try i.global.put("Select", select_builtin);
     return i;
 }
 
@@ -58,8 +62,6 @@ pub fn deinit(i: *Interpreter) void {
     i.local.deinit();
 }
 
-const IValuesList = std.ArrayList(*IValue);
-
 pub const IValue = union(enum) {
     int: i64,
     string: []const u8,
@@ -69,10 +71,21 @@ pub const IValue = union(enum) {
     none: void,
     builtin: *const fn (*Interpreter, []*IValue) anyerror!IValue,
     fn_index: u32,
+    imatrix: IMatrix,
+
+    // TODO: Figure out, how to NOT store this as a massive IValue object,
+    // passing it as a simple enum member instead.
+    op_arg: ast.BinOp,
+
     const Self = @This();
 
     pub fn create(gpa: Allocator) !*Self {
         return gpa.create(Self);
+    }
+
+    pub fn clearAndDestroy(self: *Self, gpa: Allocator) void {
+        self.clear();
+        gpa.destroy(self);
     }
 
     pub fn clear(self: *Self) void {
@@ -81,16 +94,13 @@ pub const IValue = union(enum) {
 
     pub fn clone(self: *Self, gpa: Allocator) !Self {
         return switch (self) {
+            .int => |int| .{ .int = int },
             .string => |string| .{ .string = try gpa.dupe(u8, string.string) },
+            .boolean => |boolean| .{ .boolean = boolean },
             .list => |list| .{ .list = try list.clone(gpa) },
             .hash_map => |hash_map| .{ .hash_map = try hash_map.clone() },
             else => self,
         };
-    }
-
-    pub fn clearAndDestroy(self: *Self, gpa: Allocator) void {
-        self.clear();
-        gpa.destroy(self);
     }
 };
 
@@ -98,22 +108,26 @@ const List = struct {
     elems: []const *IValue,
     const Self = @This();
 
-    pub fn fromIValuesList(gpa: Allocator, elems: *IValuesList) !Self {
-        return .{ .elems = try elems.toOwnedSlice(gpa) };
+    pub fn clear(self: *Self, gpa: Allocator) void {
+        for (self.elems) |elem| elem.clearAndDestroy(gpa);
     }
 
     pub fn get(self: *Self, index: u32) IValue {
         return self.elems[index].*;
     }
 
-    pub fn clone(self: *Self, gpa: Allocator) !Self {
-        var elems = try IValuesList.initCapacity(gpa, self.elems.len);
-        for (self.elems) |elem| elems.appendAssumeCapacity(elem);
-        return .fromIValuesList(gpa, &elems);
+    pub fn set(self: *Self, index: u32, value: *IValue) !void {
+        self.elems[index] = value;
     }
 
-    pub fn clear(self: *Self, gpa: Allocator) void {
-        for (self.elems) |elem| elem.clearAndDestroy(gpa);
+    pub fn clone(self: *Self, gpa: Allocator) !Self {
+        const len = self.elems.len;
+        var elems = try gpa.alloc(*IValue, len);
+        for (0.., self.elems) |i, elem| {
+            elems[i] = try .create(gpa);
+            elems[i].* = try i.visitNode(elem);
+        }
+        return .{ .elems = elems };
     }
 };
 
@@ -155,18 +169,15 @@ const HashMap = struct {
         }
     };
 
-    pub fn init(
-        gpa: Allocator,
-        keys: *IValuesList,
-        values: *IValuesList,
-    ) !Self {
-        var inner: std.HashMap(IValue, IValue, Context, 80) =
-            .init(gpa);
-        for (keys.items, values.items) |key, value|
-            try inner.put(key.*, value.*);
-        keys.deinit(gpa);
-        values.deinit(gpa);
+    pub fn create(gpa: Allocator, keys: []*IValue, values: []*IValue) !Self {
+        var inner: std.HashMap(IValue, IValue, Context, 80) = .init(gpa);
+        for (keys, values) |key, value| try inner.put(key.*, value.*);
         return .{ .inner = inner };
+    }
+
+    pub fn clear(self: *Self) void {
+        self.inner.clearAndFree();
+        self.* = .none;
     }
 
     pub fn get(self: *Self, key: IValue) ?IValue {
@@ -179,13 +190,6 @@ const HashMap = struct {
 
     pub fn clone(self: *Self) !Self {
         return .{ .inner = self.inner.clone() };
-    }
-
-    /// This would not destroy any keys or values, since these are managed by
-    /// the Arena (which backs the interpreter).
-    pub fn clearAndDestroy(self: *Self) void {
-        self.inner.clearAndFree();
-        self.* = .none;
     }
 };
 
@@ -218,6 +222,45 @@ fn deepEqual(lhs: IValue, rhs: IValue) bool {
     };
 }
 
+const IMatrix = struct {
+    gpa: Allocator,
+    rows: u32,
+    columns: u32,
+    data: []*IValue,
+    const Self = @This();
+
+    pub fn init(gpa: Allocator, rows: u32, columns: u32) !Self {
+        const data = try gpa.alloc(*IValue, rows * columns);
+        const none: *IValue = try .create(gpa);
+        none.* = .none;
+        @memset(data, none);
+
+        return .{
+            .gpa = gpa,
+            .rows = rows,
+            .columns = columns,
+            .data = data,
+        };
+    }
+
+    pub fn deinit(self: Self) void {
+        self.gpa.free(self.data);
+    }
+
+    inline fn index(self: Self, r: u32, c: u32) usize {
+        std.debug.assert(r < self.rows and c < self.columns);
+        return r * self.columns + c;
+    }
+
+    pub fn get(self: Self, r: u32, c: u32) *IValue {
+        return self.data[self.index(r, c)];
+    }
+
+    pub fn set(self: *Self, r: u32, c: u32, value: *IValue) void {
+        self.data[self.index(r, c)] = value;
+    }
+};
+
 pub fn visitNode(i: *Interpreter, index: Index) anyerror!IValue {
     const node: Node = i.tree.nodes[@intCast(index)];
     const res: IValue = switch (node) {
@@ -238,6 +281,7 @@ pub fn visitNode(i: *Interpreter, index: Index) anyerror!IValue {
         .fn_def => |fn_def| try i.fnDef(index, fn_def),
         .return_stmt => |return_stmt| try i.returnStmt(return_stmt),
         .fn_call => |fn_call| try i.fnCall(fn_call),
+        .op_arg => |bin_op| try i.opArg(bin_op),
         .for_stmt => |for_stmt| try i.forStmt(for_stmt),
         else => return error.UnsupportedNodeType,
     };
@@ -256,18 +300,16 @@ fn listLiteral(i: *Interpreter, list: ast.List) !List {
 
 fn hashMapLiteral(i: *Interpreter, hash_map: ast.HashMap) !HashMap {
     const len = hash_map.keys.len;
-    var keys = try IValuesList.initCapacity(i.arena, len);
-    var values = try IValuesList.initCapacity(i.arena, len);
-    for (hash_map.keys, hash_map.values) |key, value| {
-        const key_visited_ptr = try IValue.create(i.arena);
-        key_visited_ptr.* = try i.visitNode(key);
-        keys.appendAssumeCapacity(@constCast(key_visited_ptr));
+    var keys = try i.arena.alloc(*IValue, len);
+    var values = try i.arena.alloc(*IValue, len);
+    for (0.., hash_map.keys, hash_map.values) |j, key, value| {
+        keys[j] = try .create(i.arena);
+        keys[j].* = try i.visitNode(key);
 
-        const value_visited_ptr = try IValue.create(i.arena);
-        value_visited_ptr.* = try i.visitNode(value);
-        values.appendAssumeCapacity(@constCast(value_visited_ptr));
+        values[j] = try .create(i.arena);
+        values[j].* = try i.visitNode(value);
     }
-    return .init(i.arena, &keys, &values);
+    return .create(i.arena, keys, values);
 }
 
 fn binExpr(i: *Interpreter, node: ast.BinExpr) anyerror!IValue {
@@ -439,24 +481,26 @@ fn isIn(lhs: IValue, rhs: IValue) !IValue {
 }
 
 // TODO: More sophisticated checks for each specific binary operation.
-fn _checkTypeCompat(op: ast.BinOp, lhs: IValue, rhs: IValue) !void {
-    @branchHint(.cold);
-    return switch (op) {
-        .add,
-        .subtr,
-        .power,
-        .div,
-        .equal,
-        .not_equal,
-        .greater_than,
-        .greater_or_equal_than,
-        .less_than,
-        .less_or_equal_than,
-        => if (activeTag(lhs) != activeTag(rhs))
-            return error.TypeMismatch,
-        .mult, .logic_and, .logic_or, .is_in => {},
-    };
-}
+// ```
+// fn checkTypeCompat(op: ast.BinOp, lhs: IValue, rhs: IValue) !void {
+//     @branchHint(.cold);
+//     return switch (op) {
+//         .add,
+//         .subtr,
+//         .power,
+//         .div,
+//         .equal,
+//         .not_equal,
+//         .greater_than,
+//         .greater_or_equal_than,
+//         .less_than,
+//         .less_or_equal_than,
+//         => if (activeTag(lhs) != activeTag(rhs))
+//             return error.TypeMismatch,
+//         .mult, .logic_and, .logic_or, .is_in => {},
+//     };
+// }
+// ```
 
 fn condExpr(i: *Interpreter, node: ast.CondExpr) !IValue {
     const if_cond_visited = try i.visitNode(node.if_cond);
@@ -478,18 +522,15 @@ fn isTruthy(ivalue: IValue) bool {
 }
 
 fn indexExpr(i: *Interpreter, node: ast.IndexExpr) !IValue {
-    // const target: Node = i.tree.nodes[@intCast(node.target)];
     var target = try i.visitNode(node.target);
+    const index = try i.visitNode(node.index);
     switch (target) {
-        .hash_map => |*hash_map| {
-            const key = try i.visitNode(node.index);
-            return hash_map.get(key) orelse .none;
-        },
+        .hash_map => |*hash_map| return hash_map.get(index) orelse .none,
         .list => |*list| {
-            const index = try i.visitNode(node.index);
             if (index.int >= list.elems.len) return error.IndexOutOfBounds;
             return list.get(@intCast(index.int));
         },
+        // .imatrix => |*imatrix| imatrix.get(r: u32, c: u32),
         else => return error.UnsupportedType,
     }
 }
@@ -524,22 +565,17 @@ fn fnCall(i: *Interpreter, fn_call: ast.FnCall) !IValue {
         return err;
     };
     const function = fn_ptr.*;
-    var evaled_args = try IValuesList.initCapacity(
-        i.arena,
-        fn_call.args_len,
-    );
-
+    var evaled_args = try i.arena.alloc(*IValue, fn_call.args_len);
     for (0..fn_call.args_len) |offset| {
         const arg_node_index =
             i.tree.adpb[@intCast(fn_call.args_start + offset)];
 
-        const ivalue_ptr = try IValue.create(i.arena);
-        ivalue_ptr.* = try i.visitNode(arg_node_index);
-        evaled_args.appendAssumeCapacity(ivalue_ptr);
+        evaled_args[offset] = try IValue.create(i.arena);
+        evaled_args[offset].* = try i.visitNode(arg_node_index);
     }
 
     return switch (function) {
-        .builtin => |builtin| try builtin(i, evaled_args.items),
+        .builtin => |builtin| try builtin(i, evaled_args),
         .fn_index => |fn_index| {
             const fn_def = i.tree.nodes[fn_index].fn_def;
 
@@ -547,19 +583,34 @@ fn fnCall(i: *Interpreter, fn_call: ast.FnCall) !IValue {
             i.local = Table.init(i.arena);
             defer i.local = caller_local;
 
-            if (evaled_args.items.len != fn_def.args_len)
+            if (evaled_args.len != fn_def.args_len)
                 return error.ArgCountMismatch;
 
             for (0..fn_def.args_len) |offset| {
                 const param_node_index =
                     i.tree.adpb[fn_def.args_start + offset];
                 const param_name = i.tree.nodes[param_node_index].ident;
-                try i.setVar(param_name, evaled_args.items[offset].*);
+                try i.setVar(param_name, evaled_args[offset].*);
             }
 
             return i.execBlock(fn_def.body_start, fn_def.body_len);
         },
         else => error.NotCallable,
+    };
+}
+
+fn opArg(i: *Interpreter, bin_op: ast.BinOp) !IValue {
+    _ = i;
+
+    return switch (bin_op) {
+        .equal,
+        .not_equal,
+        .greater_than,
+        .greater_or_equal_than,
+        .less_than,
+        .less_or_equal_than,
+        => .{ .op_arg = bin_op },
+        else => error.UnsupportedOpArg,
     };
 }
 
@@ -588,7 +639,7 @@ fn forStmt(i: *Interpreter, for_stmt: ast.ForStmt) !IValue {
                 _ = try i.execBlock(start, len);
             }
         },
-        .int, .boolean, .none, .fn_index, .builtin => return error.TypeError,
+        else => return error.TypeError,
     }
 
     return .none;
@@ -641,24 +692,49 @@ fn builtinPrint(i: *Interpreter, args: []*IValue) anyerror!IValue {
             .string => |string| std.debug.print("{s}", .{string}),
             .boolean => |boolean| std.debug.print("{}", .{boolean}),
             .list => |list| std.debug.print(
-                "list(len={d})",
+                "List(len={d})",
                 .{list.elems.len},
             ),
             .hash_map => |hash_map| std.debug.print(
-                "map(len={d})",
+                "Map(len={d})",
                 .{hash_map.inner.count()},
             ),
-            else => std.debug.print("unknown", .{}),
+            .imatrix => |imatrix| std.debug.print(
+                "IMatrix({d}x{d})",
+                .{ imatrix.rows, imatrix.columns },
+            ),
+            else => std.debug.print("IValue at {*}", .{arg}),
         }
         if (j < args.len - 1) std.debug.print(" ", .{});
     }
     std.debug.print("\n", .{});
-    return .{ .boolean = true };
+    return .none;
 }
 
-pub fn builtinSelect(i: *Interpreter, args: []*IValue) !IValue {
-    _ = i;
-    _ = args;
+fn builtinSelect(i: *Interpreter, args: []*IValue) !IValue {
+    const lhs: List = args[0].list;
+    const op_arg: ast.BinOp = args[2].op_arg;
+    const rhs: List = args[1].list;
+    var imatrix: IMatrix =
+        try .init(i.arena, @intCast(rhs.elems.len), @intCast(lhs.elems.len));
+
+    for (0.., rhs.elems) |row, rhs_elem| {
+        for (0.., lhs.elems) |column, lhs_elem| {
+            const f = &switch (op_arg) {
+                .equal => equal,
+                .not_equal => notEqual,
+                .greater_than => greaterThan,
+                .greater_or_equal_than => greaterOrEqualThan,
+                .less_than => lessThan,
+                .less_or_equal_than => lessOrEqualThan,
+                else => unreachable,
+            };
+            const imatrix_elem: *IValue = try .create(i.arena);
+            imatrix_elem.* = try f(lhs_elem.*, rhs_elem.*);
+            imatrix.set(@intCast(row), @intCast(column), imatrix_elem);
+        }
+    }
+    return .{ .imatrix = imatrix };
 }
 
 fn builtinAggregate(i: *Interpreter, args: []*IValue) !IValue {

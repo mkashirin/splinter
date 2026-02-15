@@ -688,7 +688,6 @@ const std = @import("std");
 const fmt = std.fmt;
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
-const EnumArray = std.enums.EnumArray;
 
 const Tokenizer = @import("Tokenizer.zig");
 const Token = Tokenizer.Token;
