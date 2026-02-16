@@ -16,7 +16,9 @@ pub fn main() !void {
     const gpa = arena.allocator();
 
     const source =
-        \\selected = Select([1, 2, 2], [0, 1, 2], >);
+        // \\selector = Select([1, 2, 2], [0, 1, 2], ==);
+        // \\Aggregate(selector, [4, 6, 8]);
+        \\Indices("Hello!");
     ;
 
     var tokenizer: Tokenizer = .init(source);
@@ -44,13 +46,15 @@ pub fn main() !void {
     var interpreter: Interpreter = try .init(tree, gpa);
     defer interpreter.deinit();
     const ivalue = try interpreter.walkTree();
-    for (0..ivalue.imatrix.rows) |row| {
-        for (0..ivalue.imatrix.columns) |column| {
-            const elem = ivalue.imatrix.get(@intCast(row), @intCast(column));
-            std.debug.print(
-                "({d}, {d}): {}\n",
-                .{ row, column, elem.boolean },
-            );
-        }
-    }
+    std.debug.print("{any}\n", .{ivalue.list.elems});
+
+    // for (0..ivalue.imatrix.rows) |row| {
+    //     for (0..ivalue.imatrix.columns) |column| {
+    //         const elem = ivalue.imatrix.get(@intCast(row), @intCast(column));
+    //         std.debug.print(
+    //             "({d}, {d}): {}\n",
+    //             .{ row, column, elem.boolean },
+    //         );
+    //     }
+    // }
 }

@@ -666,10 +666,10 @@ test {
         \\
         \\list_comp = [i + 1 if i > 0 else i for i in a_list];
     ;
-    const ta = std.testing.allocator;
+    const testing_allocator = std.testing.allocator;
 
     var tokenizer: Tokenizer = .init(source);
-    var parser: Parser = try .init(&tokenizer, ta);
+    var parser: Parser = try .init(&tokenizer, testing_allocator);
     var tree: Tree = undefined;
     tree = parser.buildTree() catch |err| {
         const err_location = parser.current.location;
@@ -681,7 +681,7 @@ test {
         parser.deinit();
         return err;
     };
-    tree.deinit(ta);
+    tree.deinit(testing_allocator);
 }
 
 const std = @import("std");
