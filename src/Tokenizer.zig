@@ -23,7 +23,11 @@ pub fn next(t: *Tokenizer) Token {
     var token: Token = .{ .tag = .invalid };
     t.skipWhitespaces();
     if (t.index >= t.source.len)
-        return .{ .tag = .eof, .lexeme = "EOF" };
+        return .{
+            .tag = .eof,
+            .lexeme = "EOF",
+            .location = .{ .line = t.line + 1, .column = 0 },
+        };
     const start = t.index;
     const current = t.source[t.index];
     t.step();

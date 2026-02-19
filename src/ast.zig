@@ -175,7 +175,7 @@ pub const Parser = struct {
     }
 
     fn exprStmt(self: *Self) Error!Index {
-        const res = self.expr();
+        const res = try self.expr();
         try self.expect(.semicolon);
         self.step();
         return res;
@@ -302,7 +302,10 @@ pub const Parser = struct {
             try self.expect(.right_bracket);
             self.step();
 
-            const index_expr: IndexExpr = .{ .target = target, .index = index };
+            const index_expr: IndexExpr = .{
+                .target = target,
+                .index = index,
+            };
             return self.push(.{ .index_expr = index_expr });
         }
         return target;
@@ -320,15 +323,20 @@ pub const Parser = struct {
             return self.push(.{ .ident = name });
         self.step();
 
+        const args_start, const args_len = try self.callArgs();
+        const call: Call = .{
+            .callable = .{ .ident = name },
+            .args_start = args_start,
+            .args_len = args_len,
+        };
+        return self.push(.{ .call = call });
+    }
+
+    fn callArgs(self: *Self) !struct { Index, Index } {
         const args_start: Index = @intCast(self.adpb.items.len);
         while (true) {
+            if (self.match(.right_paren)) break;
             const arg = self.expr() catch blk: {
-                const arg_count =
-                    @as(Index, @intCast(self.adpb.items.len)) - args_start;
-
-                if (!std.mem.eql(u8, name, "Select") or arg_count != 2)
-                    return self.fail(.{ .description = "bin comp" });
-
                 const op_arg: BinOp = switch (self.current.tag) {
                     .double_equal => .equal,
                     .bang_equal => .not_equal,
@@ -345,20 +353,13 @@ pub const Parser = struct {
             };
             try self.adpb.append(self.gpa, arg);
 
-            if (self.match(.right_paren)) break;
-            try self.expect(.comma);
-            self.step();
+            if (self.match(.comma)) self.step();
         }
         self.step();
 
         const args_len =
             @as(Index, @intCast(self.adpb.items.len)) - args_start;
-        const call: FnCall = .{
-            .name = name,
-            .args_start = args_start,
-            .args_len = args_len,
-        };
-        return self.push(.{ .fn_call = call });
+        return .{ args_start, args_len };
     }
 
     fn intLiteral(self: *Self) !Index {
@@ -447,18 +448,29 @@ pub const Parser = struct {
         return self.push(.{ .hash_map = hash_map });
     }
 
-    fn push(self: *Self, node: Node) Allocator.Error!Index {
-        try self.nodes.append(self.gpa, node);
-        const index: Index = @intCast(self.nodes.items.len - 1);
-        return index;
-    }
-
     fn boxedExpr(self: *Self) !Index {
         self.step();
-        const index = try self.expr();
+        var index = try self.expr();
         try self.expect(.right_paren);
 
         self.step();
+        if (self.match(.left_paren)) {
+            self.step();
+            const args_start, const args_len = try self.callArgs();
+
+            const call: Call = .{
+                .callable = .{ .expr = index },
+                .args_start = args_start,
+                .args_len = args_len,
+            };
+            index = try self.push(.{ .call = call });
+        }
+        return index;
+    }
+
+    fn push(self: *Self, node: Node) Allocator.Error!Index {
+        try self.nodes.append(self.gpa, node);
+        const index: Index = @intCast(self.nodes.items.len - 1);
         return index;
     }
 
@@ -481,12 +493,12 @@ pub const Parser = struct {
 
     fn fail(self: *Self, reason: Diagnostic.Expected) Error {
         self.diagnostic = .{ .expected = reason, .found = self.current };
-        return Error.SyntaxParseError;
+        return Error.TreeParseError;
     }
 };
 
 pub const Error = Allocator.Error || fmt.ParseIntError ||
-    error{SyntaxParseError};
+    error{TreeParseError};
 
 pub const Tree = struct {
     indices: []const Index,
@@ -536,7 +548,7 @@ pub const Node = union(enum) {
     assign_stmt: AssignStmt,
     fn_def: FnDef,
     return_stmt: ReturnStmt,
-    fn_call: FnCall,
+    call: Call,
     op_arg: BinOp,
     for_stmt: ForStmt,
 };
@@ -562,8 +574,8 @@ pub const BinOp = enum {
     is_in,
 };
 
-pub const FnCall = struct {
-    name: []const u8,
+pub const Call = struct {
+    callable: union(enum) { ident: []const u8, expr: Index },
     args_start: Index,
     args_len: Index,
 };
@@ -676,7 +688,7 @@ test {
         const diagnostic = parser.diagnostic.?;
         std.debug.print(
             "Error at line {d}, column {d}: {any}\n",
-            .{ err_location.line, err_location.column, diagnostic },
+            .{ err_location.line, err_location.column, diagnostic.expected },
         );
         parser.deinit();
         return err;

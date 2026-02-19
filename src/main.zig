@@ -16,9 +16,10 @@ pub fn main() !void {
     const gpa = arena.allocator();
 
     const source =
+        \\indices = (Indices * 3)("Hello!");
         // \\selector = Select([1, 2, 2], [0, 1, 2], ==);
         // \\Aggregate(selector, [4, 6, 8]);
-        \\Indices("Hello!");
+        // \\Indices("Hello!");
     ;
 
     var tokenizer: Tokenizer = .init(source);
@@ -35,18 +36,18 @@ pub fn main() !void {
     };
     defer tree.deinit(gpa);
 
-    // var buffer: [1024]u8 = undefined;
-    // const writer = std.Progress.lockStderrWriter(&buffer);
-    // defer std.Progress.unlockStderrWriter();
+    var buffer: [1024]u8 = undefined;
+    const writer = std.Progress.lockStderrWriter(&buffer);
+    defer std.Progress.unlockStderrWriter();
 
-    // var renderer: Renderer = .init(writer, tree.nodes, tree.adpb);
-    // std.debug.print("Parsed AST (index-backed):\n", .{});
-    // for (tree.indices) |node| try renderer.render(node);
+    var renderer: Renderer = .init(writer, tree.nodes, tree.adpb);
+    std.debug.print("Parsed AST (index-backed):\n", .{});
+    for (tree.indices) |node| try renderer.render(node);
 
-    var interpreter: Interpreter = try .init(tree, gpa);
-    defer interpreter.deinit();
-    const ivalue = try interpreter.walkTree();
-    std.debug.print("{any}\n", .{ivalue.list.elems});
+    // var interpreter: Interpreter = try .init(tree, gpa);
+    // defer interpreter.deinit();
+    // const ivalue = try interpreter.walkTree();
+    // std.debug.print("{any}\n", .{ivalue.list.elems});
 
     // for (0..ivalue.imatrix.rows) |row| {
     //     for (0..ivalue.imatrix.columns) |column| {

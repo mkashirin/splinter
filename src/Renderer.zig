@@ -60,7 +60,7 @@ fn renderNode(r: *Renderer, index: Index) std.Io.Writer.Error!void {
         .assign_stmt => |assign_stmt| r.assignStmt(assign_stmt),
         .fn_def => |fn_def| r.fnDef(fn_def),
         .return_stmt => |return_stmt| r.returnStmt(return_stmt),
-        .fn_call => |fn_call| r.fnCall(fn_call),
+        .call => |call_| r.call(call_),
         .for_stmt => |for_stmt| r.forStmt(for_stmt),
         .op_arg => |op_arg| r.opArg(op_arg),
     };
@@ -228,8 +228,17 @@ fn returnStmt(r: *Renderer, return_stmt: ast.ReturnStmt) !void {
     try r.renderNode(return_stmt.value);
 }
 
-fn fnCall(r: *Renderer, fn_call: ast.FnCall) !void {
-    try r.print("FnCall(name: {s}):", .{fn_call.name});
+fn call(r: *Renderer, call_: ast.Call) !void {
+    switch (call_.callable) {
+        .ident => |ident_| try r.print("Call(name: {s}):", .{ident_}),
+        .expr => |expr| {
+            try r.print("Call(expr:", .{});
+            r.indent();
+            try r.renderNode(expr);
+            r.unindent();
+            try r.print(")", .{});
+        },
+    }
     r.indent();
     defer r.unindent();
 
@@ -237,8 +246,9 @@ fn fnCall(r: *Renderer, fn_call: ast.FnCall) !void {
     {
         r.indent();
         defer r.unindent();
-        const args_start: usize = @intCast(fn_call.args_start);
-        const args_end = args_start + @as(usize, fn_call.args_len);
+        if (call_.args_len < 1) try r.print("None", .{});
+        const args_start: usize = @intCast(call_.args_start);
+        const args_end = args_start + @as(usize, call_.args_len);
         var i: usize = args_start;
         while (i < args_end) : (i += 1) try r.renderNode(r.adpb[i]);
     }
