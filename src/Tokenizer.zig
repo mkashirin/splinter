@@ -146,8 +146,6 @@ pub const Token = struct {
         keyword_for,
     };
 
-    pub const Location = struct { line: usize, column: usize };
-
     pub const keywords: std.StaticStringMap(Tag) = .initComptime(.{
         .{ "true", .keyword_true },
         .{ "false", .keyword_false },
@@ -165,6 +163,8 @@ pub const Token = struct {
         return keywords.get(bytes);
     }
 };
+
+pub const Location = struct { line: usize, column: usize };
 
 fn skipWhitespaces(t: *Tokenizer) void {
     while (t.index < t.source.len) {

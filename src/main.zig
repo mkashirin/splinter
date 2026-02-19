@@ -16,25 +16,24 @@ pub fn main() !void {
     const gpa = arena.allocator();
 
     const source =
-        \\indices = (Indices * 3)("Hello!");
+        // \\indices = (Indices * 3)("Hello!");
         // \\selector = Select([1, 2, 2], [0, 1, 2], ==);
         // \\Aggregate(selector, [4, 6, 8]);
-        // \\Indices("Hello!");
+        \\Indices("Hello!");
+        \\four = 2 + 2;
+        \\"1" - "1";
     ;
 
     var tokenizer: Tokenizer = .init(source);
     var parser: Parser = try .init(&tokenizer, gpa);
-    var tree = parser.buildTree() catch |err| {
-        const err_location = parser.current.location;
+    const tree = parser.buildTree() catch |err| {
         const diagnostic = parser.diagnostic.?;
         std.debug.print(
             "Error at line {d}, column {d}: {any}\n",
-            .{ err_location.line, err_location.column, diagnostic.expected },
+            .{ diagnostic.at.line, diagnostic.at.column, diagnostic.expected },
         );
-        parser.deinit();
         return err;
     };
-    defer tree.deinit(gpa);
 
     var buffer: [1024]u8 = undefined;
     const writer = std.Progress.lockStderrWriter(&buffer);
@@ -44,10 +43,17 @@ pub fn main() !void {
     std.debug.print("Parsed AST (index-backed):\n", .{});
     for (tree.indices) |node| try renderer.render(node);
 
-    // var interpreter: Interpreter = try .init(tree, gpa);
-    // defer interpreter.deinit();
-    // const ivalue = try interpreter.walkTree();
-    // std.debug.print("{any}\n", .{ivalue.list.elems});
+    var interpreter: Interpreter = try .init(tree, gpa);
+    defer interpreter.deinit();
+    const ivalue = interpreter.walkTree() catch |err| {
+        const diagnostic = interpreter.diagnostic.?;
+        std.debug.print(
+            "Error at line {d}: {s}\n",
+            .{ diagnostic.at, diagnostic.description },
+        );
+        return err;
+    };
+    std.debug.print("{any}\n", .{ivalue});
 
     // for (0..ivalue.imatrix.rows) |row| {
     //     for (0..ivalue.imatrix.columns) |column| {

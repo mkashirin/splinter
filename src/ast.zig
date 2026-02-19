@@ -11,8 +11,9 @@ pub const Parser = struct {
     const Self = @This();
 
     pub const Diagnostic = struct {
+        at: Tokenizer.Location,
         expected: Expected,
-        found: Token,
+        found: Tag,
 
         pub const Expected = union(enum) {
             tag: Tag,
@@ -492,7 +493,11 @@ pub const Parser = struct {
     }
 
     fn fail(self: *Self, reason: Diagnostic.Expected) Error {
-        self.diagnostic = .{ .expected = reason, .found = self.current };
+        self.diagnostic = .{
+            .at = self.current.location,
+            .expected = reason,
+            .found = self.current.tag,
+        };
         return Error.TreeParseError;
     }
 };
@@ -684,11 +689,10 @@ test {
     var parser: Parser = try .init(&tokenizer, testing_allocator);
     var tree: Tree = undefined;
     tree = parser.buildTree() catch |err| {
-        const err_location = parser.current.location;
         const diagnostic = parser.diagnostic.?;
         std.debug.print(
             "Error at line {d}, column {d}: {any}\n",
-            .{ err_location.line, err_location.column, diagnostic.expected },
+            .{ diagnostic.at.line, diagnostic.at.column, diagnostic.expected },
         );
         parser.deinit();
         return err;
