@@ -6,7 +6,7 @@ tree: ast.Tree,
 global: Table,
 local: Table,
 return_value: IValue = .none,
-last_value: IValue = .none,
+last_ivalue: IValue = .none,
 diagnostic: ?Diagnostic = null,
 line: usize = 1,
 
@@ -24,27 +24,25 @@ pub fn init(tree: ast.Tree, arena: Allocator) !Interpreter {
         .local = .init(arena),
     };
 
-    const print_builtin: *IValue = try .create(i.arena);
-    print_builtin.* = .{ .builtin = builtinPrint };
-    try i.global.put("print", print_builtin);
-
-    const tokens_builtin: *IValue = try .create(i.arena);
-    tokens_builtin.* = .{ .builtin = builtinTokens };
-    try i.global.put("Tokens", tokens_builtin);
-
-    const indices_builtin: *IValue = try .create(i.arena);
-    indices_builtin.* = .{ .builtin = builtinIndices };
-    try i.global.put("Indices", indices_builtin);
-
-    const select_builtin: *IValue = try .create(i.arena);
-    select_builtin.* = .{ .builtin = builtinSelect };
-    try i.global.put("Select", select_builtin);
-
-    const aggregate_builtin: *IValue = try .create(i.arena);
-    aggregate_builtin.* = .{ .builtin = builtinAggregate };
-    try i.global.put("Aggregate", aggregate_builtin);
+    const builtins: [5]struct { []const u8, IFunc } = .{
+        .{ "Print", builtinPrint },
+        .{ "Tokens", builtinTokens },
+        .{ "Indices", builtinIndices },
+        .{ "Select", builtinSelect },
+        .{ "Aggregate", builtinAggregate },
+    };
+    for (builtins) |item| {
+        const name, const ifunc = item;
+        try i.regBuiltin(name, ifunc);
+    }
 
     return i;
+}
+
+fn regBuiltin(i: *Interpreter, name: []const u8, ifunc: IFunc) !void {
+    const ifunc_: *IValue = try .create(i.arena);
+    ifunc_.* = .{ .ifunc = ifunc };
+    try i.global.put(name, ifunc_);
 }
 
 pub fn deinit(i: *Interpreter) void {
@@ -69,9 +67,9 @@ pub fn deinit(i: *Interpreter) void {
 
 pub fn walkTree(i: *Interpreter) !IValue {
     for (i.tree.indices) |stmt_index| {
-        i.last_value.clear();
+        i.last_ivalue.clear();
 
-        i.last_value = i.visitNode(stmt_index) catch |err| switch (err) {
+        i.last_ivalue = i.visitNode(stmt_index) catch |err| switch (err) {
             error.ReturnTrigger => {
                 const ivalue = i.return_value;
                 i.return_value = .none;
@@ -82,7 +80,7 @@ pub fn walkTree(i: *Interpreter) !IValue {
         i.line += 1;
     }
 
-    return i.last_value;
+    return i.last_ivalue;
 }
 
 fn fail(i: *Interpreter, reason: []const u8) Error {
@@ -97,9 +95,10 @@ pub const IValue = union(enum) {
     list: List,
     hash_map: HashMap,
     none: void,
-    builtin: *const fn (*Interpreter, []*IValue) Error!IValue,
+    ifunc: IFunc,
     fn_index: u32,
     imatrix: IMatrix,
+    lazy_bin: LazyBin,
 
     // TODO: Figure out, how to NOT store this as a massive IValue object,
     // passing it as a simple enum member instead.
@@ -128,6 +127,13 @@ pub const IValue = union(enum) {
             .list => |*list| .{ .list = try list.clone(gpa) },
             .hash_map => |*hash_map| .{ .hash_map = try hash_map.clone() },
             else => self.*,
+        };
+    }
+
+    pub fn isCallable(self: *Self) bool {
+        return switch (self.*) {
+            .ifunc, .fn_index, .lazy_bin => true,
+            else => false,
         };
     }
 };
@@ -221,6 +227,8 @@ const HashMap = struct {
     }
 };
 
+const IFunc = *const fn (*Interpreter, []*IValue) Error!IValue;
+
 fn deepEqual(lhs: IValue, rhs: IValue) bool {
     if (meta.activeTag(lhs) != meta.activeTag(rhs)) return false;
     return switch (lhs) {
@@ -288,6 +296,8 @@ const IMatrix = struct {
         self.data[self.index(r, c)] = value;
     }
 };
+
+const LazyBin = struct { lhs: *IValue, op: ast.BinOp, rhs: *IValue };
 
 pub fn visitNode(i: *Interpreter, index: ast.Index) Error!IValue {
     const node: ast.Node = i.tree.nodes[@intCast(index)];
@@ -502,7 +512,7 @@ fn isTruthy(ivalue: IValue) bool {
 fn indexExpr(i: *Interpreter, node: ast.IndexExpr) !IValue {
     var target = try i.visitNode(node.target);
     const index = try i.visitNode(node.index);
-    // TODO: Allow indexing into IMatrix.
+    // TODO: Support indexing into IMatrix.
     switch (target) {
         .hash_map => |*hash_map| return hash_map.get(index) orelse .none,
         .list => |*list| {
@@ -536,7 +546,19 @@ fn returnStmt(i: *Interpreter, return_stmt: ast.ReturnStmt) !IValue {
     return Error.ReturnTrigger;
 }
 
+// TODO: Implement lazy evaluation, to enable support for advanced call syntax.
 fn call(i: *Interpreter, call_: ast.Call) !IValue {
+    switch (call_.callable) {
+        .ident => return i.callIdent(call_),
+        .expr => |expr| {
+            const res = try i.visitNode(expr);
+            std.debug.print("call res: {any}", .{res});
+            return res;
+        },
+    }
+}
+
+fn callIdent(i: *Interpreter, call_: ast.Call) !IValue {
     const fn_ptr = try i.getVar(call_.callable.ident);
     const function = fn_ptr.*;
     var evaled_args = try i.arena.alloc(*IValue, call_.args_len);
@@ -549,7 +571,7 @@ fn call(i: *Interpreter, call_: ast.Call) !IValue {
     }
 
     return switch (function) {
-        .builtin => |builtin| try builtin(i, evaled_args),
+        .ifunc => |ifunc| try ifunc(i, evaled_args),
         .fn_index => |fn_index| {
             const fn_def = i.tree.nodes[fn_index].fn_def;
 

@@ -16,12 +16,10 @@ pub fn main() !void {
     const gpa = arena.allocator();
 
     const source =
-        // \\indices = (Indices * 3)("Hello!");
+        \\ (Indices * 3)("Hello!");
         // \\selector = Select([1, 2, 2], [0, 1, 2], ==);
         // \\Aggregate(selector, [4, 6, 8]);
-        \\Indices("Hello!");
-        \\four = 2 + 2;
-        \\"1" - "1";
+        // \\Indices("Hello!");
     ;
 
     var tokenizer: Tokenizer = .init(source);

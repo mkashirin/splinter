@@ -10,14 +10,14 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     const exe_check = b.addExecutable(.{
-        .name = "rvmz",
+        .name = "splinter",
         .root_module = exe_mod,
     });
-    const check = b.step("check", "Check if rvmz compiles");
+    const check = b.step("check", "Check if Splinter compiles");
 
     check.dependOn(&exe_check.step);
     const exe = b.addExecutable(.{
-        .name = "rvmz",
+        .name = "splinter",
         .root_module = exe_mod,
     });
     b.installArtifact(exe);
@@ -32,7 +32,7 @@ pub fn build(b: *std.Build) void {
     // Renderer includes all three files, that need to be tested:
     // - Tokenizer.zig,
     // - Parser.zig,
-    // - Renderere.zig (itself).
+    // - Renderer.zig (itself).
     // Since that, the only file, that needs to be a test root is Renderer.zig.
     const renderer_root_module = b.createModule(.{
         .root_source_file = b.path("src/Renderer.zig"),

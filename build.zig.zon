@@ -1,8 +1,8 @@
 .{
-    .name = .razp,
+    .name = .splinter,
     .version = "0.1.0",
     .dependencies = .{},
     .minimum_zig_version = "0.15.1",
-    .fingerprint = 0x2cb2f65c20c38288,
+    .fingerprint = 0x6e018c628fae5cd3,
     .paths = .{"."},
 }
