@@ -1,5 +1,7 @@
 /// Arena is required to avoid the unnecessary complexity of the MMM here.
 arena: Allocator,
+/// Writer interface, which would be used to stream the output.
+writer: *std.Io.Writer,
 /// Tree usually gets deinitilized by the `defer` statement inside of `main()`.
 tree: ast.Tree,
 
@@ -9,17 +11,21 @@ return_value: IValue = .none,
 last_ivalue: IValue = .none,
 diagnostic: ?Diagnostic = null,
 line: usize = 1,
-
 const Interpreter = @This();
 
 pub const Diagnostic = struct { at: usize, description: []const u8 };
 
 pub const Error = Allocator.Error || error{ ReturnTrigger, EvaluationFailed };
 
-pub fn init(tree: ast.Tree, arena: Allocator) !Interpreter {
+pub fn init(
+    arena: Allocator,
+    writer: *std.Io.Writer,
+    tree: ast.Tree,
+) !Interpreter {
     var i: Interpreter = .{
-        .tree = tree,
         .arena = arena,
+        .writer = writer,
+        .tree = tree,
         .global = .init(arena),
         .local = .init(arena),
     };
@@ -678,31 +684,38 @@ pub fn setVar(i: *Interpreter, name: []const u8, ivalue: IValue) !void {
 }
 
 fn builtinPrint(i: *Interpreter, args: []*IValue) !IValue {
-    _ = i;
-
     for (args, 0..) |arg, j| {
         switch (arg.*) {
-            .int => |int| std.debug.print("{d}", .{int}),
-            .string => |string| std.debug.print("{s}", .{string}),
-            .boolean => |boolean| std.debug.print("{}", .{boolean}),
-            .list => |list| std.debug.print(
+            .int => |int| i.iprint("{d}", .{int}),
+            .string => |string| i.iprint("{s}", .{string}),
+            .boolean => |boolean| i.iprint("{}", .{boolean}),
+            .list => |list| i.iprint(
                 "List(len={d})",
                 .{list.elems.len},
             ),
-            .hash_map => |hash_map| std.debug.print(
+            .hash_map => |hash_map| i.iprint(
                 "Map(len={d})",
                 .{hash_map.inner.count()},
             ),
-            .imatrix => |imatrix| std.debug.print(
+            .imatrix => |imatrix| i.iprint(
                 "IMatrix({d}x{d})",
                 .{ imatrix.rows, imatrix.columns },
             ),
-            else => std.debug.print("IValue at {*}", .{arg}),
+            else => i.iprint("IValue at {*}", .{arg}),
         }
-        if (j < args.len - 1) std.debug.print(" ", .{});
+        if (j < args.len - 1) i.iprint(" ", .{});
     }
-    std.debug.print("\n", .{});
+    i.iprint("\n", .{});
     return .none;
+}
+
+/// Infallible print.
+fn iprint(
+    i: *Interpreter,
+    comptime format: []const u8,
+    args: anytype,
+) void {
+    i.writer.print(format, args) catch unreachable;
 }
 
 fn builtinTokens(i: *Interpreter, args: []*IValue) !IValue {

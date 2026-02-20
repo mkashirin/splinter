@@ -1,9 +1,9 @@
-/// Renderer is a stateful struct that pretty-prints an AST to a generic
-/// writer. It separates the printing logic from the AST data structures.
 writer: *std.Io.Writer,
 nodes: []const Node,
 indent_level: u8,
 adpb: []const Index,
+/// Renderer is a struct that pretty-prints an AST to a generic writer. It
+/// separates the printing logic from the AST data structures.
 const Renderer = @This();
 
 const INDENT_SIZE = 4;

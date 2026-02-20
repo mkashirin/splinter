@@ -16,10 +16,11 @@ pub fn main() !void {
     const gpa = arena.allocator();
 
     const source =
-        \\ (Indices * 3)("Hello!");
+        // \\ (Indices * 3)("Hello!");
         // \\selector = Select([1, 2, 2], [0, 1, 2], ==);
         // \\Aggregate(selector, [4, 6, 8]);
-        // \\Indices("Hello!");
+        \\indices = Indices("Hello!");
+        \\Print(indices);
     ;
 
     var tokenizer: Tokenizer = .init(source);
@@ -38,10 +39,10 @@ pub fn main() !void {
     defer std.Progress.unlockStderrWriter();
 
     var renderer: Renderer = .init(writer, tree.nodes, tree.adpb);
-    std.debug.print("Parsed AST (index-backed):\n", .{});
+    try writer.print("Parsed AST (index-backed):\n", .{});
     for (tree.indices) |node| try renderer.render(node);
 
-    var interpreter: Interpreter = try .init(tree, gpa);
+    var interpreter: Interpreter = try .init(gpa, writer, tree);
     defer interpreter.deinit();
     const ivalue = interpreter.walkTree() catch |err| {
         const diagnostic = interpreter.diagnostic.?;
@@ -51,7 +52,7 @@ pub fn main() !void {
         );
         return err;
     };
-    std.debug.print("{any}\n", .{ivalue});
+    try writer.print("{any}\n", .{ivalue});
 
     // for (0..ivalue.imatrix.rows) |row| {
     //     for (0..ivalue.imatrix.columns) |column| {
