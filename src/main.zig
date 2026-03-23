@@ -19,8 +19,8 @@ pub fn main() !void {
         // \\ (Indices * 3)("Hello!");
         // \\selector = Select([1, 2, 2], [0, 1, 2], ==);
         // \\Aggregate(selector, [4, 6, 8]);
-        \\indices = Indices("Hello!");
-        \\Print(indices);
+        \\(5 + Indices * 3)("Hello!");
+        // \\Print(indices[0]);
     ;
 
     var tokenizer: Tokenizer = .init(source);

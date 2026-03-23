@@ -104,7 +104,8 @@ pub const IValue = union(enum) {
     ifunc: IFunc,
     fn_index: u32,
     imatrix: IMatrix,
-    lazy_bin: LazyBin,
+    link: Linkable,
+    chain: Chain,
 
     // TODO: Figure out, how to NOT store this as a massive IValue object,
     // passing it as a simple enum member instead.
@@ -125,8 +126,9 @@ pub const IValue = union(enum) {
         self.* = .none;
     }
 
-    pub fn clone(self: *Self, gpa: Allocator) !Self {
-        return switch (self.*) {
+    pub fn clone(self: *Self, gpa: Allocator) !*Self {
+        const cloned: *IValue = .create(gpa);
+        cloned.* = switch (self.*) {
             .int => |int| .{ .int = int },
             .string => |string| .{ .string = try gpa.dupe(u8, string) },
             .boolean => |boolean| .{ .boolean = boolean },
@@ -134,13 +136,13 @@ pub const IValue = union(enum) {
             .hash_map => |*hash_map| .{ .hash_map = try hash_map.clone() },
             else => self.*,
         };
+        return cloned;
     }
 
-    pub fn isCallable(self: *Self) bool {
-        return switch (self.*) {
-            .ifunc, .fn_index, .lazy_bin => true,
-            else => false,
-        };
+    pub fn toPointer(self: Self, gpa: Allocator) !*Self {
+        const ptr: *IValue = try .create(gpa);
+        ptr.* = self;
+        return ptr;
     }
 };
 
@@ -303,7 +305,11 @@ const IMatrix = struct {
     }
 };
 
-const LazyBin = struct { lhs: *IValue, op: ast.BinOp, rhs: *IValue };
+const Chain = std.ArrayList(Linkable);
+const Linkable = union {
+    ifunc: IFunc,
+    lazy_bin: struct { lhs: *IValue, op: ast.BinOp, rhs: *IValue },
+};
 
 pub fn visitNode(i: *Interpreter, index: ast.Index) Error!IValue {
     const node: ast.Node = i.tree.nodes[@intCast(index)];
@@ -357,12 +363,9 @@ fn hashMapLiteral(i: *Interpreter, hash_map: ast.HashMap) !HashMap {
 }
 
 fn binExpr(i: *Interpreter, node: ast.BinExpr) Error!IValue {
-    var lhs = try i.visitNode(node.lhs);
-    defer lhs.clear();
+    const lhs = try i.visitNode(node.lhs);
 
-    var rhs = try i.visitNode(node.rhs);
-    defer rhs.clear();
-
+    const rhs = try i.visitNode(node.rhs);
     const f = &switch (node.op) {
         .add => add,
         .subtr => subtr,
@@ -557,11 +560,44 @@ fn call(i: *Interpreter, call_: ast.Call) !IValue {
     switch (call_.callable) {
         .ident => return i.callIdent(call_),
         .expr => |expr| {
-            const res = try i.visitNode(expr);
+            const res = try i.visitLinkable(expr);
             std.debug.print("call res: {any}", .{res});
             return res;
         },
     }
+}
+
+// TODO: Expand the chaining logic, implement evaluation of lazy expressions.
+// Only the following types of nodes are allowed to be members of a
+// `LazyChain`:
+// * atomic (integer, string, boolean),
+// * identifier,
+// * binary expression,
+// * conditional expression.
+fn visitLinkable(i: *Interpreter, index: ast.Index) Error!IValue {
+    const node: ast.Node = i.tree.nodes[@intCast(index)];
+    const res: IValue = switch (node) {
+        .int => |int| .{ .int = int },
+        .string => |string| .{ .string = string },
+        .boolean => |boolean| .{ .boolean = boolean },
+        .ident => |ident| return (try i.getVar(ident)).*,
+        .bin_expr => |bin_expr| try i.lazyBinExpr(bin_expr),
+        .cond_expr => |cond_expr| try i.condExpr(cond_expr),
+        else => return i.fail("this type of node cannot be chained (not linkable)"),
+    };
+    return res;
+}
+
+fn lazyBinExpr(i: *Interpreter, node: ast.BinExpr) !IValue {
+    const lhs = try i.visitLinkable(node.lhs);
+
+    const rhs = try i.visitLinkable(node.rhs);
+    const res: IValue = .{ .link = .{ .lazy_bin = .{
+        .lhs = try lhs.toPointer(i.arena),
+        .op = node.op,
+        .rhs = try rhs.toPointer(i.arena),
+    } } };
+    return res;
 }
 
 fn callIdent(i: *Interpreter, call_: ast.Call) !IValue {
