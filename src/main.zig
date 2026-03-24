@@ -16,11 +16,16 @@ pub fn main() !void {
     const gpa = arena.allocator();
 
     const source =
-        // \\ (Indices * 3)("Hello!");
         // \\selector = Select([1, 2, 2], [0, 1, 2], ==);
         // \\Aggregate(selector, [4, 6, 8]);
-        \\(5 + Indices * 3)("Hello!");
-        // \\Print(indices[0]);
+        // \\(3 * Indices)("Hello!");
+        // \\string = "Hello" + ", World!";
+        // \\multiplied = string * 3;
+        // \\Print(string);
+        // \\Print(multiplied);
+        \\lazy = (Indices * 3);
+        \\list = lazy("Hello!" * 3);
+        \\Print(list);
     ;
 
     var tokenizer: Tokenizer = .init(source);

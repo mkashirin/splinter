@@ -182,7 +182,7 @@ fn step(t: *Tokenizer) void {
     t.index += 1;
 }
 
-fn match(t: *Tokenizer, with: u8) bool {
+inline fn match(t: *Tokenizer, with: u8) bool {
     return t.source[t.index] == with;
 }
 

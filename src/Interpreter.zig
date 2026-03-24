@@ -8,7 +8,7 @@ tree: ast.Tree,
 global: Table,
 local: Table,
 return_value: IValue = .none,
-last_ivalue: IValue = .none,
+last_value: IValue = .none,
 diagnostic: ?Diagnostic = null,
 line: usize = 1,
 const Interpreter = @This();
@@ -55,8 +55,8 @@ pub fn deinit(i: *Interpreter) void {
     if (i.global.count() > 0) {
         var global_it = i.global.valueIterator();
         while (global_it.next()) |value_ptr| {
-            const ivalue_ptr = value_ptr.*;
-            ivalue_ptr.clearAndDestroy(i.arena);
+            const value_ptr_ = value_ptr.*;
+            value_ptr_.clearAndDestroy(i.arena);
         }
     }
     i.global.deinit();
@@ -64,8 +64,8 @@ pub fn deinit(i: *Interpreter) void {
     if (i.local.count() > 0) {
         var local_it = i.local.valueIterator();
         while (local_it.next()) |value_ptr| {
-            const ivalue_ptr = value_ptr.*;
-            ivalue_ptr.clearAndDestroy(i.arena);
+            const value_ptr_ = value_ptr.*;
+            value_ptr_.clearAndDestroy(i.arena);
         }
     }
     i.local.deinit();
@@ -73,23 +73,24 @@ pub fn deinit(i: *Interpreter) void {
 
 pub fn walkTree(i: *Interpreter) !IValue {
     for (i.tree.indices) |stmt_index| {
-        i.last_ivalue.clear();
+        i.last_value.clear();
 
-        i.last_ivalue = i.visitNode(stmt_index) catch |err| switch (err) {
+        i.last_value = i.visitNode(stmt_index) catch |err| switch (err) {
             error.ReturnTrigger => {
-                const ivalue = i.return_value;
+                const value = i.return_value;
                 i.return_value = .none;
-                return ivalue;
+                return value;
             },
             else => return err,
         };
         i.line += 1;
     }
 
-    return i.last_ivalue;
+    return i.last_value;
 }
 
 fn fail(i: *Interpreter, reason: []const u8) Error {
+    @branchHint(.cold);
     i.diagnostic = .{ .at = i.line, .description = reason };
     return Error.EvaluationFailed;
 }
@@ -102,16 +103,18 @@ pub const IValue = union(enum) {
     hash_map: HashMap,
     none: void,
     ifunc: IFunc,
-    fn_index: u32,
+    fn_index: ast.Index,
     imatrix: IMatrix,
-    link: Linkable,
-    chain: Chain,
+    lazy_index: ast.Index,
 
     // TODO: Figure out, how to NOT store this as a massive IValue object,
     // passing it as a simple enum member instead.
     op_arg: ast.BinOp,
 
     const Self = @This();
+    pub inline fn is(self: Self, tag: meta.Tag(Self)) bool {
+        return self == tag;
+    }
 
     pub fn create(gpa: Allocator) !*Self {
         return gpa.create(Self);
@@ -122,7 +125,7 @@ pub const IValue = union(enum) {
         gpa.destroy(self);
     }
 
-    pub fn clear(self: *Self) void {
+    pub inline fn clear(self: *Self) void {
         self.* = .none;
     }
 
@@ -140,9 +143,9 @@ pub const IValue = union(enum) {
     }
 
     pub fn toPointer(self: Self, gpa: Allocator) !*Self {
-        const ptr: *IValue = try .create(gpa);
-        ptr.* = self;
-        return ptr;
+        const value_ptr: *IValue = try .create(gpa);
+        value_ptr.* = self;
+        return value_ptr;
     }
 };
 
@@ -190,10 +193,10 @@ const HashMap = struct {
             return deepEqual(a, b);
         }
 
-        fn deepHash(hasher: anytype, ivalue: IValue) void {
-            std.hash.autoHash(hasher, meta.activeTag(ivalue));
+        fn deepHash(hasher: anytype, value: IValue) void {
+            std.hash.autoHash(hasher, meta.activeTag(value));
 
-            switch (ivalue) {
+            switch (value) {
                 .int => |int| std.hash.autoHash(hasher, int),
                 .boolean => |boolean| std.hash.autoHash(hasher, boolean),
                 .string => |string| hasher.update(string),
@@ -266,6 +269,11 @@ fn deepEqual(lhs: IValue, rhs: IValue) bool {
     };
 }
 
+// NOTE: For now, this is a type, which only interpreter gets to makes use of.
+// User cannot interact with it in any, except for looking at it's
+// representation, which is available via `builtinPrint()`. Bounds check on
+// access indices should be implemented properly before exposing the `IMatrix`
+// interaction API to a user.
 const IMatrix = struct {
     gpa: Allocator,
     rows: u32,
@@ -291,8 +299,10 @@ const IMatrix = struct {
         self.gpa.free(self.data);
     }
 
+    // NOTE: Since this is getting used in built-in functions only, the logic
+    // of these already implies all the neccessary constraints on the access
+    // indices.
     inline fn index(self: Self, r: u32, c: u32) usize {
-        std.debug.assert(r < self.rows and c < self.columns);
         return r * self.columns + c;
     }
 
@@ -305,14 +315,8 @@ const IMatrix = struct {
     }
 };
 
-const Chain = std.ArrayList(Linkable);
-const Linkable = union {
-    ifunc: IFunc,
-    lazy_bin: struct { lhs: *IValue, op: ast.BinOp, rhs: *IValue },
-};
-
 pub fn visitNode(i: *Interpreter, index: ast.Index) Error!IValue {
-    const node: ast.Node = i.tree.nodes[@intCast(index)];
+    const node: ast.Node = i.getNode(index);
     const res: IValue = switch (node) {
         .int => |int| .{ .int = int },
         .string => |string| .{ .string = string },
@@ -330,9 +334,10 @@ pub fn visitNode(i: *Interpreter, index: ast.Index) Error!IValue {
         .assign_stmt => |assign_stmt| try i.assignStmt(assign_stmt),
         .fn_def => |fn_def| try i.fnDef(index, fn_def),
         .return_stmt => |return_stmt| try i.returnStmt(return_stmt),
-        .call => |call_| try i.call(call_),
+        .call => |any_call| try i.call(any_call),
         .op_arg => |bin_op| try i.opArg(bin_op),
         .for_stmt => |for_stmt| try i.forStmt(for_stmt),
+        // TODO: Implement list and dictionary comprehensions.
         else => return i.fail("Visited invalid node type"),
     };
     return res;
@@ -362,11 +367,14 @@ fn hashMapLiteral(i: *Interpreter, hash_map: ast.HashMap) !HashMap {
     return .create(i.arena, keys, values);
 }
 
-fn binExpr(i: *Interpreter, node: ast.BinExpr) Error!IValue {
-    const lhs = try i.visitNode(node.lhs);
+fn binExpr(i: *Interpreter, bin_expr: ast.BinExpr) Error!IValue {
+    const lhs = try i.visitNode(bin_expr.lhs);
+    const rhs = try i.visitNode(bin_expr.rhs);
+    return i.evalBin(bin_expr.op, lhs, rhs);
+}
 
-    const rhs = try i.visitNode(node.rhs);
-    const f = &switch (node.op) {
+fn evalBin(i: *Interpreter, op: ast.BinOp, lhs: IValue, rhs: IValue) Error!IValue {
+    const f = &switch (op) {
         .add => add,
         .subtr => subtr,
         .mult => mult,
@@ -413,23 +421,45 @@ fn subtr(i: *Interpreter, lhs: IValue, rhs: IValue) !IValue {
 }
 
 fn mult(i: *Interpreter, lhs: IValue, rhs: IValue) !IValue {
+    if (lhs.is(.int) and (rhs.is(.string) or rhs.is(.list)))
+        return i.mult(rhs, lhs);
+
     return switch (lhs) {
-        .int => .{ .int = lhs.int * rhs.int },
-        else => i.fail("Invalid type for operation: MULT"),
+        .int => if (rhs.is(.int))
+            .{ .int = lhs.int * rhs.int }
+        else
+            i.fail("Cannot multiply integer by non-integer"),
+        .string => |string| if (rhs.is(.int)) blk: {
+            if (rhs.int < 1)
+                return i.fail("String multiplier must not be negative");
+            const smu: usize = @intCast(rhs.int);
+            var buf = try i.arena.alloc(u8, string.len * smu);
+            for (0..smu) |j| {
+                const start = j * string.len;
+                @memcpy(buf[start .. start + string.len], string);
+            }
+            break :blk .{ .string = buf };
+        } else i.fail("Cannot multiply string by non-integer"),
+        .list => |list| if (rhs.is(.int)) blk: {
+            for (list.elems) |elem_ptr|
+                elem_ptr.* = try i.mult(elem_ptr.*, rhs);
+            break :blk lhs;
+        } else i.fail("Cannot multiply list by non-int"),
+        else => i.fail("Invalid type for multiplication"),
     };
 }
 
 fn div(i: *Interpreter, lhs: IValue, rhs: IValue) !IValue {
     return switch (lhs) {
         .int => .{ .int = @divFloor(lhs.int, rhs.int) },
-        else => i.fail("Invalid type for operation: DIV"),
+        else => i.fail("Division is only supported for integers"),
     };
 }
 
 fn power(i: *Interpreter, lhs: IValue, rhs: IValue) !IValue {
     return switch (lhs) {
         .int => .{ .int = std.math.pow(i64, lhs.int, rhs.int) },
-        else => i.fail("Invalid type for operation: POW"),
+        else => i.fail("Power is only supported for integers"),
     };
 }
 
@@ -440,28 +470,28 @@ fn notEqual(i: *Interpreter, lhs: IValue, rhs: IValue) !IValue {
 fn lessThan(i: *Interpreter, lhs: IValue, rhs: IValue) !IValue {
     return switch (lhs) {
         .int => .{ .boolean = lhs.int < rhs.int },
-        else => i.fail("Invalid type for operation: LT"),
+        else => i.fail("Can only tell whether one integer is LT another"),
     };
 }
 
 fn lessOrEqualThan(i: *Interpreter, lhs: IValue, rhs: IValue) !IValue {
     return switch (lhs) {
         .int => .{ .boolean = lhs.int <= rhs.int },
-        else => i.fail("Invalid type for operation: LET"),
+        else => i.fail("Can only tell whether one integer is LET another"),
     };
 }
 
 fn greaterThan(i: *Interpreter, lhs: IValue, rhs: IValue) !IValue {
     return switch (lhs) {
         .int => .{ .boolean = lhs.int > rhs.int },
-        else => i.fail("Invalid type for operation: GT"),
+        else => i.fail("Can only tell whether one integer is GT another"),
     };
 }
 
 fn greaterOrEqualThan(i: *Interpreter, lhs: IValue, rhs: IValue) !IValue {
     return switch (lhs) {
         .int => .{ .boolean = lhs.int >= rhs.int },
-        else => i.fail("Invalid type for operation: GET"),
+        else => i.fail("Can only tell whether one integer is GET another"),
     };
 }
 
@@ -507,8 +537,8 @@ fn condExpr(i: *Interpreter, node: ast.CondExpr) !IValue {
         i.visitNode(node.else_expr));
 }
 
-fn isTruthy(ivalue: IValue) bool {
-    return switch (ivalue) {
+inline fn isTruthy(value: IValue) bool {
+    return switch (value) {
         .int => |int| int != 0,
         .boolean => |boolean| boolean,
         .string => |string| string.len > 0,
@@ -539,9 +569,12 @@ fn equal(i: *Interpreter, lhs: IValue, rhs: IValue) !IValue {
 }
 
 fn assignStmt(i: *Interpreter, assign_stmt: ast.AssignStmt) !IValue {
-    const ivalue = try i.visitNode(assign_stmt.value);
-    try i.setVar(assign_stmt.name, ivalue);
-    return ivalue;
+    const value: IValue = i.visitNode(assign_stmt.value) catch |err| switch (err) {
+        error.EvaluationFailed => .{ .lazy_index = assign_stmt.value },
+        else => return err,
+    };
+    try i.setVar(assign_stmt.name, value);
+    return value;
 }
 
 fn fnDef(i: *Interpreter, index: ast.Index, fn_def: ast.FnDef) !IValue {
@@ -556,63 +589,87 @@ fn returnStmt(i: *Interpreter, return_stmt: ast.ReturnStmt) !IValue {
 }
 
 // TODO: Implement lazy evaluation, to enable support for advanced call syntax.
-fn call(i: *Interpreter, call_: ast.Call) !IValue {
-    switch (call_.callable) {
-        .ident => return i.callIdent(call_),
-        .expr => |expr| {
-            const res = try i.visitLinkable(expr);
-            std.debug.print("call res: {any}", .{res});
-            return res;
-        },
-    }
+fn call(i: *Interpreter, any_call: ast.Call) !IValue {
+    return switch (any_call.callable) {
+        .ident => i.callIdent(any_call),
+        .expr => i.evalExprCall(any_call),
+    };
 }
 
-// TODO: Expand the chaining logic, implement evaluation of lazy expressions.
-// Only the following types of nodes are allowed to be members of a
-// `LazyChain`:
+// TODO: Expand the expression calling logic, implement evaluation of lazy
+// expressions. Only the following types of nodes are allowed to be members of
+// a callable expression:
 // * atomic (integer, string, boolean),
 // * identifier,
 // * binary expression,
 // * conditional expression.
-fn visitLinkable(i: *Interpreter, index: ast.Index) Error!IValue {
-    const node: ast.Node = i.tree.nodes[@intCast(index)];
-    const res: IValue = switch (node) {
+fn evalExprCall(i: *Interpreter, expr_call: ast.Call) Error!IValue {
+    const node: ast.Node = i.getNode(expr_call.callable.expr);
+    const args = .{ expr_call.args_start, expr_call.args_len };
+    const res: IValue = sw: switch (node) {
         .int => |int| .{ .int = int },
         .string => |string| .{ .string = string },
         .boolean => |boolean| .{ .boolean = boolean },
-        .ident => |ident| return (try i.getVar(ident)).*,
-        .bin_expr => |bin_expr| try i.lazyBinExpr(bin_expr),
-        .cond_expr => |cond_expr| try i.condExpr(cond_expr),
-        else => return i.fail("this type of node cannot be chained (not linkable)"),
+        .ident => |ident| try i.resolveExprCallIdent(ident, args),
+        .bin_expr => |bin_expr| {
+            const lhs = i.getNode(bin_expr.lhs);
+            const lhs_resolved = try if (lhs.is(.ident))
+                i.resolveExprCallIdent(lhs.ident, args)
+            else
+                i.visitNode(bin_expr.lhs);
+
+            const rhs = i.getNode(bin_expr.rhs);
+            const rhs_resolved = try if (rhs.is(.ident))
+                i.resolveExprCallIdent(rhs.ident, args)
+            else
+                i.visitNode(bin_expr.rhs);
+
+            break :sw try i.evalBin(bin_expr.op, lhs_resolved, rhs_resolved);
+        },
+        // .cond_expr => |cond_expr| try i.condExpr(cond_expr),
+        else => return i.fail("This type of node is disallowed/unsupported"),
     };
     return res;
 }
 
-fn lazyBinExpr(i: *Interpreter, node: ast.BinExpr) !IValue {
-    const lhs = try i.visitLinkable(node.lhs);
-
-    const rhs = try i.visitLinkable(node.rhs);
-    const res: IValue = .{ .link = .{ .lazy_bin = .{
-        .lhs = try lhs.toPointer(i.arena),
-        .op = node.op,
-        .rhs = try rhs.toPointer(i.arena),
-    } } };
-    return res;
+fn resolveExprCallIdent(
+    i: *Interpreter,
+    ident: []const u8,
+    args: struct { u32, u32 },
+) !IValue {
+    const value = try i.getVar(ident);
+    return switch (value.*) {
+        .ifunc, .fn_index => i.callIdent(.{
+            .callable = .{ .ident = ident },
+            .args_start = args[0],
+            .args_len = args[1],
+        }),
+        else => value.*,
+    };
 }
 
-fn callIdent(i: *Interpreter, call_: ast.Call) !IValue {
-    const fn_ptr = try i.getVar(call_.callable.ident);
-    const function = fn_ptr.*;
-    var evaled_args = try i.arena.alloc(*IValue, call_.args_len);
-    for (0..call_.args_len) |offset| {
+fn callIdent(i: *Interpreter, ident_call: ast.Call) !IValue {
+    const fn_ptr = try i.getVar(ident_call.callable.ident);
+    const fn_obj = fn_ptr.*;
+    // TODO: Maybe this needs evaluated arguments too?..
+    if (fn_obj.is(.lazy_index)) {
+        const expr_call: ast.Call = .{
+            .callable = .{ .expr = fn_obj.lazy_index },
+            .args_start = ident_call.args_start,
+            .args_len = ident_call.args_len,
+        };
+        return i.evalExprCall(expr_call);
+    }
+    var evaled_args = try i.arena.alloc(*IValue, ident_call.args_len);
+    for (0..ident_call.args_len) |offset| {
         const arg_node_index =
-            i.tree.adpb[@intCast(call_.args_start + offset)];
+            i.tree.adpb[@intCast(ident_call.args_start + offset)];
 
         evaled_args[offset] = try IValue.create(i.arena);
         evaled_args[offset].* = try i.visitNode(arg_node_index);
     }
 
-    return switch (function) {
+    return switch (fn_obj) {
         .ifunc => |ifunc| try ifunc(i, evaled_args),
         .fn_index => |fn_index| {
             const fn_def = i.tree.nodes[fn_index].fn_def;
@@ -631,7 +688,7 @@ fn callIdent(i: *Interpreter, call_: ast.Call) !IValue {
                 try i.setVar(param_name, evaled_args[offset].*);
             }
 
-            return i.execBlock(fn_def.body_start, fn_def.body_len);
+            return i.evalBlock(fn_def.body_start, fn_def.body_len);
         },
         else => i.fail("IValue is not callable"),
     };
@@ -659,20 +716,20 @@ fn forStmt(i: *Interpreter, for_stmt: ast.ForStmt) !IValue {
         .list => |list| {
             for (list.elems) |elem_ptr| {
                 try i.setVar(variable, elem_ptr.*);
-                _ = try i.execBlock(start, len);
+                _ = try i.evalBlock(start, len);
             }
         },
         .string => |string| {
             for (0..string.len) |j| {
                 try i.setVar(variable, .{ .string = string[j .. j + 1] });
-                _ = try i.execBlock(start, len);
+                _ = try i.evalBlock(start, len);
             }
         },
         .hash_map => |hash_map| {
             var it = hash_map.inner.keyIterator();
             while (it.next()) |key_ptr| {
                 try i.setVar(variable, key_ptr.*);
-                _ = try i.execBlock(start, len);
+                _ = try i.evalBlock(start, len);
             }
         },
         else => return i.fail("IValue is not iterable"),
@@ -681,7 +738,7 @@ fn forStmt(i: *Interpreter, for_stmt: ast.ForStmt) !IValue {
     return .none;
 }
 
-fn execBlock(i: *Interpreter, start: ast.Index, len: ast.Index) !IValue {
+fn evalBlock(i: *Interpreter, start: ast.Index, len: ast.Index) !IValue {
     for (0..len) |offset| {
         const stmt_node_index = i.tree.adpb[start + offset];
 
@@ -701,22 +758,22 @@ fn execBlock(i: *Interpreter, start: ast.Index, len: ast.Index) !IValue {
 const Table = std.StringHashMap(*IValue);
 
 pub fn getVar(i: *Interpreter, name: []const u8) !*IValue {
-    if (i.local.get(name)) |ivalue_ptr|
-        return ivalue_ptr
-    else if (i.global.get(name)) |ivalue_ptr| return ivalue_ptr;
+    if (i.local.get(name)) |value|
+        return value
+    else if (i.global.get(name)) |value| return value;
     return i.fail("No definition found");
 }
 
-pub fn setVar(i: *Interpreter, name: []const u8, ivalue: IValue) !void {
+pub fn setVar(i: *Interpreter, name: []const u8, value: IValue) !void {
     const entry = try i.local.getOrPut(name);
 
     if (entry.found_existing) {
-        const ivalue_ptr = entry.value_ptr.*;
-        ivalue_ptr.clear();
+        const value_ptr = entry.value_ptr.*;
+        value_ptr.clear();
     } else entry.value_ptr.* = try IValue.create(i.arena);
 
-    const ivalue_ptr = entry.value_ptr.*;
-    ivalue_ptr.* = ivalue;
+    const ptr = entry.value_ptr.*;
+    ptr.* = value;
 }
 
 fn builtinPrint(i: *Interpreter, args: []*IValue) !IValue {
@@ -832,6 +889,10 @@ fn builtinAggregate(i: *Interpreter, args: []*IValue) Error!IValue {
     }
     const list: List = .{ .elems = elems };
     return .{ .list = list };
+}
+
+inline fn getNode(i: *Interpreter, index: ast.Index) ast.Node {
+    return i.tree.nodes[@intCast(index)];
 }
 
 const std = @import("std");

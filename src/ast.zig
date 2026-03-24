@@ -479,11 +479,11 @@ pub const Parser = struct {
         self.current = self.tokenizer.next();
     }
 
-    fn match(self: *Self, with: Tag) bool {
+    inline fn match(self: *Self, with: Tag) bool {
         return self.current.tag == with;
     }
 
-    fn matchUpcoming(self: *Self, with: Tag) bool {
+    inline fn matchUpcoming(self: *Self, with: Tag) bool {
         return self.upcoming.tag == with;
     }
 
@@ -493,6 +493,7 @@ pub const Parser = struct {
     }
 
     fn fail(self: *Self, reason: Diagnostic.Expected) Error {
+        @branchHint(.cold);
         self.diagnostic = .{
             .at = self.current.location,
             .expected = reason,
@@ -556,6 +557,11 @@ pub const Node = union(enum) {
     call: Call,
     op_arg: BinOp,
     for_stmt: ForStmt,
+
+    const Self = @This();
+    pub inline fn is(self: Self, tag: std.meta.Tag(Self)) bool {
+        return self == tag;
+    }
 };
 
 pub const BinExpr = struct { lhs: Index, op: BinOp, rhs: Index };
