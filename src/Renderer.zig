@@ -206,7 +206,7 @@ fn fnDef(r: *Renderer, fn_def: ast.FnDef) !void {
         while (i < args_end) : (i += 1) {
             const arg_node_index = r.adpb[i];
             const arg_node = r.nodes[@intCast(arg_node_index)];
-            try r.print("{s}", .{arg_node.ident});
+            try r.print("(#{d}) {s}", .{ arg_node_index, arg_node.ident });
         }
     }
 

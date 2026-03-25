@@ -55,8 +55,8 @@ pub fn deinit(i: *Interpreter) void {
     if (i.global.count() > 0) {
         var global_it = i.global.valueIterator();
         while (global_it.next()) |value_ptr| {
-            const value_ptr_ = value_ptr.*;
-            value_ptr_.clearAndDestroy(i.arena);
+            const actual_value_ptr = value_ptr.*;
+            actual_value_ptr.clearAndDestroy(i.arena);
         }
     }
     i.global.deinit();
@@ -64,8 +64,8 @@ pub fn deinit(i: *Interpreter) void {
     if (i.local.count() > 0) {
         var local_it = i.local.valueIterator();
         while (local_it.next()) |value_ptr| {
-            const value_ptr_ = value_ptr.*;
-            value_ptr_.clearAndDestroy(i.arena);
+            const actual_value_ptr = value_ptr.*;
+            actual_value_ptr.clearAndDestroy(i.arena);
         }
     }
     i.local.deinit();
@@ -246,13 +246,13 @@ fn deepEqual(lhs: IValue, rhs: IValue) bool {
         .int => |int| int == rhs.int,
         .boolean => |boolean| boolean == rhs.boolean,
         .string => |string| std.mem.eql(u8, string, rhs.string),
-        .list => |list| {
-            if (list.elems.len != rhs.list.elems.len) return false;
+        .list => |list| eq_blk: {
+            if (list.elems.len != rhs.list.elems.len) break :eq_blk false;
             for (list.elems, rhs.list.elems) |elem_ptr, rhs_elem_ptr|
-                if (!deepEqual(elem_ptr.*, rhs_elem_ptr.*)) return false;
-            return true;
+                if (!deepEqual(elem_ptr.*, rhs_elem_ptr.*)) break :eq_blk false;
+            break :eq_blk true;
         },
-        .hash_map => |hash_map| {
+        .hash_map => |hash_map| eq_blk: {
             if (hash_map.inner.count() != rhs.hash_map.inner.count())
                 return false;
             var it = hash_map.inner.iterator();
@@ -261,19 +261,19 @@ fn deepEqual(lhs: IValue, rhs: IValue) bool {
                 const rhs_pair = rhs_it.next().?;
                 const pair_key, const rhs_pair_key =
                     .{ pair.key_ptr.*, rhs_pair.key_ptr.* };
-                if (!deepEqual(pair_key, rhs_pair_key)) return false;
+                if (!deepEqual(pair_key, rhs_pair_key)) break :eq_blk false;
             }
-            return true;
+            break :eq_blk true;
         },
         else => unreachable,
     };
 }
 
 // NOTE: For now, this is a type, which only interpreter gets to makes use of.
-// User cannot interact with it in any, except for looking at it's
+// User cannot interact with it in any way, except for looking at it's
 // representation, which is available via `builtinPrint()`. Bounds check on
 // access indices should be implemented properly before exposing the `IMatrix`
-// interaction API to a user.
+// interaction API.
 const IMatrix = struct {
     gpa: Allocator,
     rows: u32,
@@ -323,6 +323,7 @@ pub fn visitNode(i: *Interpreter, index: ast.Index) Error!IValue {
         .boolean => |boolean| .{ .boolean = boolean },
         .ident => |ident| (try i.getVar(ident)).*,
         .list => |list| .{ .list = try i.listLiteral(list) },
+        // .list_comp => |list_comp| .{ .list = try i.listComp(list_comp) },
         .hash_map => |hash_map| value_blk: {
             break :value_blk .{ .hash_map = try i.hashMapLiteral(hash_map) };
         },
@@ -337,7 +338,6 @@ pub fn visitNode(i: *Interpreter, index: ast.Index) Error!IValue {
         .call => |any_call| i.call(any_call),
         .op_arg => |bin_op| i.opArg(bin_op),
         .for_stmt => |for_stmt| i.forStmt(for_stmt),
-        // TODO: Implement list and dictionary comprehensions.
         else => i.fail("Visited invalid node type"),
     };
 }
@@ -350,6 +350,11 @@ fn listLiteral(i: *Interpreter, list: ast.List) !List {
         elems[j].* = try i.visitNode(elem);
     }
     return .{ .elems = elems };
+}
+
+fn listComp(i: *Interpreter, list_comp: ast.ListComp) void {
+    _ = i;
+    _ = list_comp;
 }
 
 fn hashMapLiteral(i: *Interpreter, hash_map: ast.HashMap) !HashMap {
@@ -469,28 +474,28 @@ fn notEqual(i: *Interpreter, lhs: IValue, rhs: IValue) !IValue {
 fn lessThan(i: *Interpreter, lhs: IValue, rhs: IValue) !IValue {
     return switch (lhs) {
         .int => .{ .boolean = lhs.int < rhs.int },
-        else => i.fail("Can only tell whether one integer is LT another"),
+        else => i.fail("Can only tell whether one integer is less than (LT) another"),
     };
 }
 
 fn lessOrEqualThan(i: *Interpreter, lhs: IValue, rhs: IValue) !IValue {
     return switch (lhs) {
         .int => .{ .boolean = lhs.int <= rhs.int },
-        else => i.fail("Can only tell whether one integer is LET another"),
+        else => i.fail("Can only tell whether one integer is less or equal than (LET) another"),
     };
 }
 
 fn greaterThan(i: *Interpreter, lhs: IValue, rhs: IValue) !IValue {
     return switch (lhs) {
         .int => .{ .boolean = lhs.int > rhs.int },
-        else => i.fail("Can only tell whether one integer is GT another"),
+        else => i.fail("Can only tell whether one integer is greater than (GT) another"),
     };
 }
 
 fn greaterOrEqualThan(i: *Interpreter, lhs: IValue, rhs: IValue) !IValue {
     return switch (lhs) {
         .int => .{ .boolean = lhs.int >= rhs.int },
-        else => i.fail("Can only tell whether one integer is GET another"),
+        else => i.fail("Can only tell whether one integer is greater or equal than (GET) another"),
     };
 }
 
@@ -524,7 +529,7 @@ fn isIn(i: *Interpreter, lhs: IValue, rhs: IValue) !IValue {
             const key = lhs;
             return .{ .boolean = hash_map.inner.contains(key) };
         },
-        else => return i.fail("Invalid type for operation: ISIN"),
+        else => return i.fail("Cannot tell whether LHS is in RHS (invalid type)"),
     }
 }
 
@@ -551,15 +556,15 @@ fn indexExpr(i: *Interpreter, index_expr: ast.IndexExpr) !IValue {
     var target = try i.visitNode(index_expr.target);
     const index = try i.visitNode(index_expr.index);
     // TODO: Support indexing into IMatrix.
-    switch (target) {
+    return switch (target) {
         .hash_map => |*hash_map| return hash_map.get(index) orelse .none,
-        .list => |*list| {
+        .list => |*list| value_blk: {
             if (index.int >= list.elems.len)
-                return i.fail("List index out of bounds");
-            return list.get(@intCast(index.int));
+                break :value_blk i.fail("List index out of bounds");
+            break :value_blk list.get(@intCast(index.int));
         },
-        else => return i.fail("Could not index into the type"),
-    }
+        else => i.fail("Could not index into the type"),
+    };
 }
 
 fn equal(i: *Interpreter, lhs: IValue, rhs: IValue) !IValue {

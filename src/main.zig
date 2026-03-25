@@ -16,22 +16,15 @@ pub fn main() !void {
     const gpa = arena.allocator();
 
     const source =
-        // \\selector = Select([1, 2, 2], [0, 1, 2], ==);
-        // \\Aggregate(selector, [4, 6, 8]);
-        \\def add(a, b) {
-        \\    return a + b;
-        \\}
-        \\a_list = [1, 2, 3];
-        \\lazy = (2 * add if 4 else 1 * add);
-        \\evaluated = lazy(2, 2);
-        \\Print(evaluated);
-        // \\string = "Hello" + ", World!";
-        // \\multiplied = string * 3;
-        // \\Print(string);
-        // \\Print(multiplied);
-        // \\lazy = (Indices * 3);
-        // \\list = lazy("Hello!" * 3);
-        // \\Print(list);
+        // \\def add(a, b) {
+        // \\    return a + b;
+        // \\}
+        \\a_list = [1, [2, 3]];
+        \\Print(a_list[1][0]);
+        // \\lazy = (2 * add if a_list[1] else 0 * add);
+        // \\evaluated = lazy(2, 2);
+        // \\Print(evaluated);
+        // \\lc = [i for i in "abc"];
     ;
 
     var tokenizer: Tokenizer = .init(source);

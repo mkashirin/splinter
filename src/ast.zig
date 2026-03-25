@@ -296,7 +296,7 @@ pub const Parser = struct {
     }
 
     fn indexExpr(self: *Self, target: Index) !Index {
-        while (self.match(.left_bracket)) {
+        if (self.match(.left_bracket)) {
             self.step();
 
             const index = try self.expr();
@@ -307,7 +307,9 @@ pub const Parser = struct {
                 .target = target,
                 .index = index,
             };
-            return self.push(.{ .index_expr = index_expr });
+            const inner_target = try self.push(.{ .index_expr = index_expr });
+            if (self.match(.left_bracket)) return self.indexExpr(inner_target);
+            return inner_target;
         }
         return target;
     }
