@@ -588,7 +588,7 @@ pub const BinOp = enum {
 pub const Call = struct {
     callable: union(enum) { ident: []const u8, expr: Index },
     args_start: Index,
-    args_len: Index,
+    args_len: u32,
 };
 
 pub const CondExpr = struct {

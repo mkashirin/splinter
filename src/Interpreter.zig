@@ -317,30 +317,29 @@ const IMatrix = struct {
 
 pub fn visitNode(i: *Interpreter, index: ast.Index) Error!IValue {
     const node: ast.Node = i.getNode(index);
-    const res: IValue = switch (node) {
+    return switch (node) {
         .int => |int| .{ .int = int },
         .string => |string| .{ .string = string },
         .boolean => |boolean| .{ .boolean = boolean },
-        .ident => |ident| return (try i.getVar(ident)).*,
+        .ident => |ident| (try i.getVar(ident)).*,
         .list => |list| .{ .list = try i.listLiteral(list) },
-        .hash_map => |hash_map| {
-            return .{ .hash_map = try i.hashMapLiteral(hash_map) };
+        .hash_map => |hash_map| value_blk: {
+            break :value_blk .{ .hash_map = try i.hashMapLiteral(hash_map) };
         },
 
-        .bin_expr => |bin_expr| try i.binExpr(bin_expr),
-        .cond_expr => |cond_expr| try i.condExpr(cond_expr),
-        .index_expr => |index_expr| try i.indexExpr(index_expr),
+        .bin_expr => |bin_expr| i.binExpr(bin_expr),
+        .cond_expr => |cond_expr| i.condExpr(cond_expr),
+        .index_expr => |index_expr| i.indexExpr(index_expr),
 
-        .assign_stmt => |assign_stmt| try i.assignStmt(assign_stmt),
-        .fn_def => |fn_def| try i.fnDef(index, fn_def),
+        .assign_stmt => |assign_stmt| i.assignStmt(assign_stmt),
+        .fn_def => |fn_def| i.fnDef(index, fn_def),
         .return_stmt => |return_stmt| try i.returnStmt(return_stmt),
-        .call => |any_call| try i.call(any_call),
-        .op_arg => |bin_op| try i.opArg(bin_op),
-        .for_stmt => |for_stmt| try i.forStmt(for_stmt),
+        .call => |any_call| i.call(any_call),
+        .op_arg => |bin_op| i.opArg(bin_op),
+        .for_stmt => |for_stmt| i.forStmt(for_stmt),
         // TODO: Implement list and dictionary comprehensions.
-        else => return i.fail("Visited invalid node type"),
+        else => i.fail("Visited invalid node type"),
     };
-    return res;
 }
 
 fn listLiteral(i: *Interpreter, list: ast.List) !List {
@@ -429,7 +428,7 @@ fn mult(i: *Interpreter, lhs: IValue, rhs: IValue) !IValue {
             .{ .int = lhs.int * rhs.int }
         else
             i.fail("Cannot multiply integer by non-integer"),
-        .string => |string| if (rhs.is(.int)) blk: {
+        .string => |string| if (rhs.is(.int)) value_blk: {
             if (rhs.int < 1)
                 return i.fail("String multiplier must not be negative");
             const smu: usize = @intCast(rhs.int);
@@ -438,12 +437,12 @@ fn mult(i: *Interpreter, lhs: IValue, rhs: IValue) !IValue {
                 const start = j * string.len;
                 @memcpy(buf[start .. start + string.len], string);
             }
-            break :blk .{ .string = buf };
+            break :value_blk .{ .string = buf };
         } else i.fail("Cannot multiply string by non-integer"),
-        .list => |list| if (rhs.is(.int)) blk: {
+        .list => |list| if (rhs.is(.int)) value_blk: {
             for (list.elems) |elem_ptr|
                 elem_ptr.* = try i.mult(elem_ptr.*, rhs);
-            break :blk lhs;
+            break :value_blk lhs;
         } else i.fail("Cannot multiply list by non-int"),
         else => i.fail("Invalid type for multiplication"),
     };
@@ -529,12 +528,12 @@ fn isIn(i: *Interpreter, lhs: IValue, rhs: IValue) !IValue {
     }
 }
 
-fn condExpr(i: *Interpreter, node: ast.CondExpr) !IValue {
-    const if_cond_visited = try i.visitNode(node.if_cond);
-    return (if (isTruthy(if_cond_visited))
-        i.visitNode(node.then)
+fn condExpr(i: *Interpreter, cond_expr: ast.CondExpr) !IValue {
+    const if_cond = try i.visitNode(cond_expr.if_cond);
+    return (if (isTruthy(if_cond))
+        i.visitNode(cond_expr.then)
     else
-        i.visitNode(node.else_expr));
+        i.visitNode(cond_expr.else_expr));
 }
 
 inline fn isTruthy(value: IValue) bool {
@@ -548,9 +547,9 @@ inline fn isTruthy(value: IValue) bool {
     };
 }
 
-fn indexExpr(i: *Interpreter, node: ast.IndexExpr) !IValue {
-    var target = try i.visitNode(node.target);
-    const index = try i.visitNode(node.index);
+fn indexExpr(i: *Interpreter, index_expr: ast.IndexExpr) !IValue {
+    var target = try i.visitNode(index_expr.target);
+    const index = try i.visitNode(index_expr.index);
     // TODO: Support indexing into IMatrix.
     switch (target) {
         .hash_map => |*hash_map| return hash_map.get(index) orelse .none,
@@ -588,70 +587,9 @@ fn returnStmt(i: *Interpreter, return_stmt: ast.ReturnStmt) !IValue {
     return Error.ReturnTrigger;
 }
 
-// TODO: Implement lazy evaluation, to enable support for advanced call syntax.
-fn call(i: *Interpreter, any_call: ast.Call) !IValue {
-    return switch (any_call.callable) {
-        .ident => i.callIdent(any_call),
-        .expr => i.evalExprCall(any_call),
-    };
-}
-
-// TODO: Expand the expression calling logic, implement evaluation of lazy
-// expressions. Only the following types of nodes are allowed to be members of
-// a callable expression:
-// * atomic (integer, string, boolean),
-// * identifier,
-// * binary expression,
-// * conditional expression.
-fn evalExprCall(i: *Interpreter, expr_call: ast.Call) Error!IValue {
-    const node: ast.Node = i.getNode(expr_call.callable.expr);
-    const args = .{ expr_call.args_start, expr_call.args_len };
-    const res: IValue = sw: switch (node) {
-        .int => |int| .{ .int = int },
-        .string => |string| .{ .string = string },
-        .boolean => |boolean| .{ .boolean = boolean },
-        .ident => |ident| try i.resolveExprCallIdent(ident, args),
-        .bin_expr => |bin_expr| {
-            const lhs = i.getNode(bin_expr.lhs);
-            const lhs_resolved = try if (lhs.is(.ident))
-                i.resolveExprCallIdent(lhs.ident, args)
-            else
-                i.visitNode(bin_expr.lhs);
-
-            const rhs = i.getNode(bin_expr.rhs);
-            const rhs_resolved = try if (rhs.is(.ident))
-                i.resolveExprCallIdent(rhs.ident, args)
-            else
-                i.visitNode(bin_expr.rhs);
-
-            break :sw try i.evalBin(bin_expr.op, lhs_resolved, rhs_resolved);
-        },
-        // .cond_expr => |cond_expr| try i.condExpr(cond_expr),
-        else => return i.fail("This type of node is disallowed/unsupported"),
-    };
-    return res;
-}
-
-fn resolveExprCallIdent(
-    i: *Interpreter,
-    ident: []const u8,
-    args: struct { u32, u32 },
-) !IValue {
-    const value = try i.getVar(ident);
-    return switch (value.*) {
-        .ifunc, .fn_index => i.callIdent(.{
-            .callable = .{ .ident = ident },
-            .args_start = args[0],
-            .args_len = args[1],
-        }),
-        else => value.*,
-    };
-}
-
-fn callIdent(i: *Interpreter, ident_call: ast.Call) !IValue {
+fn call(i: *Interpreter, ident_call: ast.Call) !IValue {
     const fn_ptr = try i.getVar(ident_call.callable.ident);
     const fn_obj = fn_ptr.*;
-    // TODO: Maybe this needs evaluated arguments too?..
     if (fn_obj.is(.lazy_index)) {
         const expr_call: ast.Call = .{
             .callable = .{ .expr = fn_obj.lazy_index },
@@ -660,38 +598,108 @@ fn callIdent(i: *Interpreter, ident_call: ast.Call) !IValue {
         };
         return i.evalExprCall(expr_call);
     }
-    var evaled_args = try i.arena.alloc(*IValue, ident_call.args_len);
+    var args = try i.arena.alloc(*IValue, ident_call.args_len);
     for (0..ident_call.args_len) |offset| {
         const arg_node_index =
             i.tree.adpb[@intCast(ident_call.args_start + offset)];
 
-        evaled_args[offset] = try IValue.create(i.arena);
-        evaled_args[offset].* = try i.visitNode(arg_node_index);
+        args[offset] = try IValue.create(i.arena);
+        args[offset].* = try i.visitNode(arg_node_index);
     }
 
     return switch (fn_obj) {
-        .ifunc => |ifunc| try ifunc(i, evaled_args),
-        .fn_index => |fn_index| {
-            const fn_def = i.tree.nodes[fn_index].fn_def;
-
-            const caller_local = i.local;
-            i.local = Table.init(i.arena);
-            defer i.local = caller_local;
-
-            if (evaled_args.len != fn_def.args_len)
-                return i.fail("Argument count mismatch");
-
-            for (0..fn_def.args_len) |offset| {
-                const param_node_index =
-                    i.tree.adpb[fn_def.args_start + offset];
-                const param_name = i.tree.nodes[param_node_index].ident;
-                try i.setVar(param_name, evaled_args[offset].*);
-            }
-
-            return i.evalBlock(fn_def.body_start, fn_def.body_len);
-        },
+        .ifunc => |ifunc| ifunc(i, args),
+        .fn_index => |fn_index| i.callFn(fn_index, args),
         else => i.fail("IValue is not callable"),
     };
+}
+
+fn evalExprCall(i: *Interpreter, expr_call: ast.Call) Error!IValue {
+    const node: ast.Node = i.getNode(expr_call.callable.expr);
+    const args: CallArgs = .{
+        .start = expr_call.args_start,
+        .len = expr_call.args_len,
+    };
+    return switch (node) {
+        .ident => |ident| i.exprCallIdent(ident, args),
+        .bin_expr => |bin_expr| i.binExprCall(bin_expr, args),
+        .cond_expr => |cond_expr| i.condExprCall(cond_expr, args),
+        else => i.fail("This type of node is disallowed/unsupported"),
+    };
+}
+
+fn binExprCall(
+    i: *Interpreter,
+    bin_expr: ast.BinExpr,
+    args: CallArgs,
+) !IValue {
+    const lhs = try i.visitExprCallNode(bin_expr.lhs, args);
+    const rhs = try i.visitExprCallNode(bin_expr.rhs, args);
+    return i.evalBin(bin_expr.op, lhs, rhs);
+}
+
+fn condExprCall(
+    i: *Interpreter,
+    cond_expr: ast.CondExpr,
+    args: CallArgs,
+) !IValue {
+    const if_cond = try i.visitExprCallNode(cond_expr.if_cond, args);
+    return if (isTruthy(if_cond))
+        i.visitExprCallNode(cond_expr.then, args)
+    else
+        i.visitExprCallNode(cond_expr.else_expr, args);
+}
+
+fn visitExprCallNode(
+    i: *Interpreter,
+    index: ast.Index,
+    args: CallArgs,
+) !IValue {
+    const node = i.getNode(index);
+    return if (node.is(.ident))
+        i.exprCallIdent(node.ident, args)
+    else if (node.is(.bin_expr))
+        i.evalExprCall(.{
+            .callable = .{ .expr = index },
+            .args_start = args.start,
+            .args_len = args.len,
+        })
+    else
+        i.visitNode(index);
+}
+
+fn exprCallIdent(i: *Interpreter, ident: []const u8, args: CallArgs) !IValue {
+    const value = try i.getVar(ident);
+    return switch (value.*) {
+        .ifunc, .fn_index => i.call(.{
+            .callable = .{ .ident = ident },
+            .args_start = args.start,
+            .args_len = args.len,
+        }),
+        else => value.*,
+    };
+}
+
+const CallArgs = struct { start: ast.Index, len: u32 };
+
+fn callFn(i: *Interpreter, fn_index: ast.Index, args: []*IValue) !IValue {
+    const fn_def = i.tree.nodes[fn_index].fn_def;
+
+    const caller_local = i.local;
+    i.local = Table.init(i.arena);
+    defer i.local = caller_local;
+
+    if (args.len != fn_def.args_len)
+        return i.fail("Argument count mismatch");
+
+    for (0..fn_def.args_len) |offset| {
+        const param_node_index =
+            i.tree.adpb[fn_def.args_start + offset];
+        const param_name = i.tree.nodes[param_node_index].ident;
+        try i.setVar(param_name, args[offset].*);
+    }
+
+    return i.evalBlock(fn_def.body_start, fn_def.body_len);
 }
 
 fn opArg(i: *Interpreter, bin_op: ast.BinOp) !IValue {
