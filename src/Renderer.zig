@@ -8,21 +8,12 @@ const Renderer = @This();
 
 const INDENT_SIZE = 4;
 
-pub fn init(
-    writer: *std.Io.Writer,
-    nodes: []const Node,
-    adp: []const Index,
-) Renderer {
-    return .{
-        .writer = writer,
-        .nodes = nodes,
-        .indent_level = 0,
-        .adpb = adp,
-    };
+pub fn init(writer: *std.Io.Writer, nodes: []const Node, adpb: []const Index) Renderer {
+    return .{ .writer = writer, .nodes = nodes, .indent_level = 0, .adpb = adpb };
 }
 
 pub fn render(r: *Renderer, root_index: Index) !void {
-    try r.renderNode(root_index);
+    try r.rnode(root_index);
 }
 
 fn indent(r: *Renderer) void {
@@ -33,16 +24,12 @@ fn unindent(r: *Renderer) void {
     r.indent_level -= INDENT_SIZE;
 }
 
-fn print(
-    r: *Renderer,
-    comptime format: []const u8,
-    args: anytype,
-) !void {
+fn print(r: *Renderer, comptime format: []const u8, args: anytype) !void {
     for (0..r.indent_level) |_| try r.writer.print(" ", .{});
     try r.writer.print(format ++ "\n", args);
 }
 
-fn renderNode(r: *Renderer, index: Index) std.Io.Writer.Error!void {
+fn rnode(r: *Renderer, index: Index) std.Io.Writer.Error!void {
     try r.print("(#{d})", .{index});
     try switch (r.nodes[@intCast(index)]) {
         .boolean => |boolean_| r.boolean(boolean_),
@@ -88,7 +75,7 @@ fn list(r: *Renderer, list_: ast.List) !void {
     defer r.unindent();
 
     const end = list_.elems.len;
-    for (0..end) |i| try r.renderNode(list_.elems[i]);
+    for (0..end) |i| try r.rnode(list_.elems[i]);
 }
 
 fn listComp(r: *Renderer, list_comp: ast.ListComp) !void {
@@ -100,16 +87,16 @@ fn listComp(r: *Renderer, list_comp: ast.ListComp) !void {
     {
         r.indent();
         defer r.unindent();
-        try r.renderNode(list_comp.expr);
+        try r.rnode(list_comp.expr);
     }
 
     try r.print("Variable: {s}", .{list_comp.variable});
 
-    try r.print("Iterable:", .{});
+    try r.print("Iter:", .{});
     {
         r.indent();
         defer r.unindent();
-        try r.renderNode(list_comp.iterable);
+        try r.rnode(list_comp.iter);
     }
 }
 
@@ -124,8 +111,8 @@ fn hashMap(r: *Renderer, hash_map: ast.HashMap) !void {
         try r.print("Pair:", .{});
         r.indent();
         defer r.unindent();
-        try r.renderNode(hash_map.keys[i]);
-        try r.renderNode(hash_map.values[j]);
+        try r.rnode(hash_map.keys[i]);
+        try r.rnode(hash_map.values[j]);
     }
 }
 
@@ -133,8 +120,8 @@ fn binExpr(r: *Renderer, bin_expr: ast.BinExpr) !void {
     try r.print("BinExpr({s}):", .{bol.get(bin_expr.op)});
     r.indent();
     defer r.unindent();
-    try r.renderNode(bin_expr.lhs);
-    try r.renderNode(bin_expr.rhs);
+    try r.rnode(bin_expr.lhs);
+    try r.rnode(bin_expr.rhs);
 }
 
 fn condExpr(r: *Renderer, cond_expr: ast.CondExpr) !void {
@@ -146,21 +133,21 @@ fn condExpr(r: *Renderer, cond_expr: ast.CondExpr) !void {
     {
         r.indent();
         defer r.unindent();
-        try r.renderNode(cond_expr.then);
+        try r.rnode(cond_expr.then);
     }
 
     try r.print("If:", .{});
     {
         r.indent();
         defer r.unindent();
-        try r.renderNode(cond_expr.if_cond);
+        try r.rnode(cond_expr.if_cond);
     }
 
     try r.print("Else:", .{});
     {
         r.indent();
         defer r.unindent();
-        try r.renderNode(cond_expr.else_expr);
+        try r.rnode(cond_expr.else_expr);
     }
 }
 
@@ -173,14 +160,14 @@ fn indexExpr(r: *Renderer, index_expr: ast.IndexExpr) !void {
     {
         r.indent();
         defer r.unindent();
-        try r.renderNode(index_expr.target);
+        try r.rnode(index_expr.target);
     }
 
     try r.print("Index:", .{});
     {
         r.indent();
         defer r.unindent();
-        try r.renderNode(index_expr.index);
+        try r.rnode(index_expr.index);
     }
 }
 
@@ -188,7 +175,7 @@ fn assignStmt(r: *Renderer, assign_stmt: ast.AssignStmt) !void {
     try r.print("AssignStmt(name: {s}):", .{assign_stmt.name});
     r.indent();
     defer r.unindent();
-    try r.renderNode(assign_stmt.value);
+    try r.rnode(assign_stmt.value);
 }
 
 fn fnDef(r: *Renderer, fn_def: ast.FnDef) !void {
@@ -206,7 +193,7 @@ fn fnDef(r: *Renderer, fn_def: ast.FnDef) !void {
         while (i < args_end) : (i += 1) {
             const arg_node_index = r.adpb[i];
             const arg_node = r.nodes[@intCast(arg_node_index)];
-            try r.print("(#{d}) {s}", .{ arg_node_index, arg_node.ident });
+            try r.print("{s}", .{arg_node.ident});
         }
     }
 
@@ -217,7 +204,7 @@ fn fnDef(r: *Renderer, fn_def: ast.FnDef) !void {
         const body_start: usize = @intCast(fn_def.body_start);
         const body_end = body_start + @as(usize, fn_def.body_len);
         var i: usize = body_start;
-        while (i < body_end) : (i += 1) try r.renderNode(r.adpb[i]);
+        while (i < body_end) : (i += 1) try r.rnode(r.adpb[i]);
     }
 }
 
@@ -225,7 +212,7 @@ fn returnStmt(r: *Renderer, return_stmt: ast.ReturnStmt) !void {
     try r.print("ReturnStmt:", .{});
     r.indent();
     defer r.unindent();
-    try r.renderNode(return_stmt.value);
+    try r.rnode(return_stmt.value);
 }
 
 fn call(r: *Renderer, call_: ast.Call) !void {
@@ -234,7 +221,7 @@ fn call(r: *Renderer, call_: ast.Call) !void {
         .expr => |expr| {
             try r.print("Call(expr:", .{});
             r.indent();
-            try r.renderNode(expr);
+            try r.rnode(expr);
             r.unindent();
             try r.print(")", .{});
         },
@@ -250,7 +237,7 @@ fn call(r: *Renderer, call_: ast.Call) !void {
         const args_start: usize = @intCast(call_.args_start);
         const args_end = args_start + @as(usize, call_.args_len);
         var i: usize = args_start;
-        while (i < args_end) : (i += 1) try r.renderNode(r.adpb[i]);
+        while (i < args_end) : (i += 1) try r.rnode(r.adpb[i]);
     }
 }
 
@@ -265,11 +252,11 @@ fn forStmt(r: *Renderer, for_stmt: ast.ForStmt) !void {
     r.indent();
     defer r.unindent();
 
-    try r.print("Iterable:", .{});
+    try r.print("Iter:", .{});
     {
         r.indent();
         defer r.unindent();
-        try r.renderNode(for_stmt.iterable);
+        try r.rnode(for_stmt.iter);
     }
 
     try r.print("Body:", .{});
@@ -279,7 +266,7 @@ fn forStmt(r: *Renderer, for_stmt: ast.ForStmt) !void {
         const body_start: usize = @intCast(for_stmt.body_start);
         const body_end = body_start + @as(usize, for_stmt.body_len);
         var i: usize = body_start;
-        while (i < body_end) : (i += 1) try r.renderNode(r.adpb[i]);
+        while (i < body_end) : (i += 1) try r.rnode(r.adpb[i]);
     }
 }
 

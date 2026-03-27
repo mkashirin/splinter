@@ -47,10 +47,7 @@ pub const Parser = struct {
     fn stmt(self: *Self) Error!Index {
         self.peek();
         return switch (self.current.tag) {
-            .ident => if (self.matchUpcoming(.equal))
-                self.assignStmt()
-            else
-                self.exprStmt(),
+            .ident => if (self.matchUpcoming(.equal)) self.assignStmt() else self.exprStmt(),
             .keyword_def => self.fnDef(),
             .keyword_return => self.returnStmt(),
             .keyword_for => self.forStmt(),
@@ -72,10 +69,7 @@ pub const Parser = struct {
                 self.step();
 
                 const value = try self.assignStmt();
-                const assign_stmt: AssignStmt = .{
-                    .name = name,
-                    .value = value,
-                };
+                const assign_stmt: AssignStmt = .{ .name = name, .value = value };
 
                 variable = try self.push(.{ .assign_stmt = assign_stmt });
                 try self.expect(.semicolon);
@@ -168,7 +162,7 @@ pub const Parser = struct {
 
         const for_stmt: ForStmt = .{
             .variable = variable,
-            .iterable = iterable,
+            .iter = iterable,
             .body_start = body_start,
             .body_len = body_len,
         };
@@ -196,22 +190,18 @@ pub const Parser = struct {
         self.step();
 
         const else_expr = try self.inAndOrExpr();
-        const cond_expr: CondExpr = .{
-            .then = then,
-            .if_cond = if_cond,
-            .else_expr = else_expr,
-        };
+        const cond_expr: CondExpr = .{ .then = then, .if_cond = if_cond, .else_expr = else_expr };
         return self.push(.{ .cond_expr = cond_expr });
     }
 
     fn inAndOrExpr(self: *Self) !Index {
         var lhs = try self.compExpr();
-        while (true) {
+        blk: {
             const op: BinOp = switch (self.current.tag) {
                 .keyword_in => .is_in,
                 .keyword_and => .logic_and,
                 .keyword_or => .logic_or,
-                else => break,
+                else => break :blk,
             };
             self.step();
 
@@ -224,7 +214,7 @@ pub const Parser = struct {
 
     fn compExpr(self: *Self) !Index {
         var lhs = try self.addSubtrExpr();
-        while (true) {
+        blk: {
             const op: BinOp = switch (self.current.tag) {
                 .double_equal => .equal,
                 .bang_equal => .not_equal,
@@ -233,7 +223,7 @@ pub const Parser = struct {
                 .less_than => .less_than,
                 .less_or_equal_than => .less_or_equal_than,
 
-                else => break,
+                else => break :blk,
             };
             self.step();
 
@@ -246,11 +236,11 @@ pub const Parser = struct {
 
     fn addSubtrExpr(self: *Self) !Index {
         var lhs = try self.multDivPowExpr();
-        while (true) {
+        blk: {
             const op: BinOp = switch (self.current.tag) {
                 .plus => .add,
                 .minus => .subtr,
-                else => break,
+                else => break :blk,
             };
             self.step();
 
@@ -263,12 +253,12 @@ pub const Parser = struct {
 
     fn multDivPowExpr(self: *Self) !Index {
         var lhs = try self.primaryExpr();
-        while (true) {
+        blk: {
             const op: BinOp = switch (self.current.tag) {
                 .star => .mult,
                 .carrot => .power,
                 .slash => .div,
-                else => break,
+                else => break :blk,
             };
             self.step();
 
@@ -303,10 +293,7 @@ pub const Parser = struct {
             try self.expect(.right_bracket);
             self.step();
 
-            const index_expr: IndexExpr = .{
-                .target = target,
-                .index = index,
-            };
+            const index_expr: IndexExpr = .{ .target = target, .index = index };
             const inner_target = try self.push(.{ .index_expr = index_expr });
             if (self.match(.left_bracket)) return self.indexExpr(inner_target);
             return inner_target;
@@ -322,8 +309,7 @@ pub const Parser = struct {
         const name = self.current.lexeme.?;
         self.step();
 
-        if (!self.match(.left_paren))
-            return self.push(.{ .ident = name });
+        if (!self.match(.left_paren)) return self.push(.{ .ident = name });
         self.step();
 
         const args_start, const args_len = try self.callArgs();
@@ -360,8 +346,7 @@ pub const Parser = struct {
         }
         self.step();
 
-        const args_len =
-            @as(Index, @intCast(self.adpb.items.len)) - args_start;
+        const args_len = @as(Index, @intCast(self.adpb.items.len)) - args_start;
         return .{ args_start, args_len };
     }
 
@@ -419,11 +404,7 @@ pub const Parser = struct {
         const iterable = try self.expr();
         try self.expect(.right_bracket);
         self.step();
-        const list_comp: ListComp = .{
-            .expr = expr_,
-            .variable = variable,
-            .iterable = iterable,
-        };
+        const list_comp: ListComp = .{ .expr = expr_, .variable = variable, .iter = iterable };
         return self.push(.{ .list_comp = list_comp });
     }
 
@@ -505,8 +486,7 @@ pub const Parser = struct {
     }
 };
 
-pub const Error = Allocator.Error || fmt.ParseIntError ||
-    error{TreeParseError};
+pub const Error = Allocator.Error || fmt.ParseIntError || error{TreeParseError};
 
 pub const Tree = struct {
     indices: []const Index,
@@ -593,11 +573,7 @@ pub const Call = struct {
     args_len: u32,
 };
 
-pub const CondExpr = struct {
-    then: Index,
-    if_cond: Index,
-    else_expr: Index,
-};
+pub const CondExpr = struct { then: Index, if_cond: Index, else_expr: Index };
 pub const AssignStmt = struct { name: []const u8, value: Index };
 
 pub const FnDef = struct {
@@ -612,7 +588,7 @@ pub const ReturnStmt = struct { value: Index };
 
 pub const ForStmt = struct {
     variable: []const u8,
-    iterable: Index,
+    iter: Index,
     body_start: Index,
     body_len: Index,
 };
@@ -630,11 +606,7 @@ pub const List = struct {
     }
 };
 
-pub const ListComp = struct {
-    expr: Index,
-    variable: []const u8,
-    iterable: Index,
-};
+pub const ListComp = struct { expr: Index, variable: []const u8, iter: Index };
 
 pub const HashMap = struct {
     keys: []const Index,
@@ -695,16 +667,9 @@ test {
 
     var tokenizer: Tokenizer = .init(source);
     var parser: Parser = try .init(&tokenizer, testing_allocator);
+    errdefer parser.deinit();
     var tree: Tree = undefined;
-    tree = parser.buildTree() catch |err| {
-        const diagnostic = parser.diagnostic.?;
-        std.debug.print(
-            "Error at line {d}, column {d}: {any}\n",
-            .{ diagnostic.at.line, diagnostic.at.column, diagnostic.expected },
-        );
-        parser.deinit();
-        return err;
-    };
+    tree = try parser.buildTree();
     tree.deinit(testing_allocator);
 }
 

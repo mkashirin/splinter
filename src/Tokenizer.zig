@@ -23,11 +23,7 @@ pub fn next(t: *Tokenizer) Token {
     var token: Token = .{ .tag = .invalid };
     t.skipWhitespaces();
     if (t.index >= t.source.len)
-        return .{
-            .tag = .eof,
-            .lexeme = "EOF",
-            .location = .{ .line = t.line + 1, .column = 0 },
-        };
+        return .{ .tag = .eof, .lexeme = "EOF", .location = .{ .line = t.line + 1, .column = 0 } };
     const start = t.index;
     const current = t.source[t.index];
     t.step();
@@ -42,9 +38,7 @@ pub fn next(t: *Tokenizer) Token {
                 }
             }
             const lexeme = t.source[start..t.index];
-            if (Token.keyword(lexeme)) |tag|
-                break :sw tag
-            else {
+            if (Token.keyword(lexeme)) |tag| break :sw tag else {
                 token.lexeme = lexeme;
                 break :sw .ident;
             }
@@ -64,8 +58,7 @@ pub fn next(t: *Tokenizer) Token {
 
         '"' => {
             t.step();
-            while (t.index < t.source.len and
-                t.source[t.index] != '"') t.step();
+            while (t.index < t.source.len and t.source[t.index] != '"') t.step();
             t.step();
             token.lexeme = t.source[start + 1 .. t.index - 1];
             break :sw .string_literal;
