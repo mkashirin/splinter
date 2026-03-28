@@ -29,10 +29,9 @@ pub fn main() !void {
         // \\Print(evaluated);
         // \\comprehension = [i + "d" for i in {"a": 0, "b": 1}];
         // \\Print(comprehension[1]);
-        // TODO: For now, it returns an array of booleans (result of `Tokens == "e"`), when it
-        // really should be returning `Indicator(...)`.
-        \\matches = (Indicator(Tokens == "e"))("Hey");
-        \\indicated = matches[2];
+        \\lazy = (Tokens == "e");
+        \\matches = lazy("Hey");
+        \\indicated = Indicator(matches)[1];
         \\Print(indicated);
     ;
 

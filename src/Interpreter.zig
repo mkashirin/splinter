@@ -11,29 +11,27 @@ return_value: IValue = .none,
 last_value: IValue = .none,
 diagnostic: ?Diagnostic = null,
 line: usize = 1,
+
+// TODO: Implement call chaining and functions as arguments.
 const Interpreter = @This();
 
-const Table = std.StringHashMap(*IValue);
+const Table = std.StringHashMap(IValue);
 
 pub fn getVar(i: *Interpreter, name: []const u8) !IValue {
-    return if (i.local.get(name)) |value_ptr|
-        value_ptr.*
-    else if (i.global.get(name)) |value_ptr|
-        value_ptr.*
-    else
-        i.fail("No definition found", error.UndefinedSymbol);
+    if (i.local.get(name)) |value| {
+        return value;
+    } else if (i.global.get(name)) |value| {
+        return value;
+    } else return i.fail("No definition found", error.UndefinedSymbol);
 }
 
 pub fn setVar(i: *Interpreter, name: []const u8, value: IValue) !void {
     const entry = try i.local.getOrPut(name);
-
     if (entry.found_existing) {
-        const value_ptr = entry.value_ptr.*;
-        value_ptr.clear();
-    } else entry.value_ptr.* = try IValue.create(i.arena);
-
-    const actual_value_ptr = entry.value_ptr.*;
-    actual_value_ptr.* = value;
+        var value_ = entry.value_ptr.*;
+        value_.clear();
+    } else entry.value_ptr.* = value;
+    entry.value_ptr.* = value;
 }
 
 pub const Diagnostic = struct { at: usize, description: []const u8 };
@@ -76,27 +74,19 @@ inline fn getNode(i: *Interpreter, index: ast.Index) ast.Node {
 }
 
 fn regBuiltin(i: *Interpreter, name: []const u8, ifunc: IFunc) !void {
-    const ifunc_: *IValue = try .create(i.arena);
-    ifunc_.* = .{ .ifunc = ifunc };
-    try i.global.put(name, ifunc_);
+    try i.global.put(name, .{ .ifunc = ifunc });
 }
 
 pub fn deinit(i: *Interpreter) void {
     if (i.global.count() > 0) {
         var global_it = i.global.valueIterator();
-        while (global_it.next()) |value_ptr| {
-            const actual_value_ptr = value_ptr.*;
-            actual_value_ptr.clearAndDestroy(i.arena);
-        }
+        while (global_it.next()) |value_ptr| value_ptr.clearAndDestroy(i.arena);
     }
     i.global.deinit();
 
     if (i.local.count() > 0) {
         var local_it = i.local.valueIterator();
-        while (local_it.next()) |value_ptr| {
-            const actual_value_ptr = value_ptr.*;
-            actual_value_ptr.clearAndDestroy(i.arena);
-        }
+        while (local_it.next()) |value_ptr| value_ptr.clearAndDestroy(i.arena);
     }
     i.local.deinit();
 }
@@ -134,12 +124,12 @@ pub const IValue = union(enum) {
     int: i64,
     string: []const u8,
     boolean: bool,
-    list: List,
-    hash_map: HashMap,
+    list: *List,
+    hash_map: *HashMap,
     none: void,
     ifunc: IFunc,
     fn_index: ast.Index,
-    imatrix: IMatrix,
+    imatrix: *IMatrix,
     lazy_index: ast.Index,
 
     // TODO: Figure out, how to NOT store this as a massive IValue object,
@@ -147,6 +137,7 @@ pub const IValue = union(enum) {
     op_arg: ast.BinOp,
 
     const Self = @This();
+
     pub inline fn is(self: Self, tag: meta.Tag(Self)) bool {
         return self == tag;
     }
@@ -164,8 +155,8 @@ pub const IValue = union(enum) {
         self.* = .none;
     }
 
-    pub inline fn len(self: *const Self) ?usize {
-        return switch (self.*) {
+    pub inline fn len(self: Self) ?usize {
+        return switch (self) {
             .string => |string| string.len,
             .list => |list| list.elems.len,
             .hash_map => |hash_map| hash_map.inner.capacity(),
@@ -173,36 +164,34 @@ pub const IValue = union(enum) {
         };
     }
 
-    pub fn clone(self: *Self, gpa: Allocator) !*Self {
-        const cloned: *IValue = .create(gpa);
-        cloned.* = switch (self.*) {
+    pub fn clone(self: Self, gpa: Allocator) !Self {
+        return switch (self.*) {
             .int => |int| .{ .int = int },
             .string => |string| .{ .string = try gpa.dupe(u8, string) },
             .boolean => |boolean| .{ .boolean = boolean },
-            .list => |*list| .{ .list = try list.clone(gpa) },
-            .hash_map => |*hash_map| .{ .hash_map = try hash_map.clone() },
+            .list => |list| .{ .list = try list.clone(gpa) },
+            .hash_map => |hash_map| .{ .hash_map = try hash_map.clone() },
             else => self.*,
         };
-        return cloned;
-    }
-
-    pub fn toPointer(self: Self, gpa: Allocator) !*Self {
-        const value_ptr: *IValue = try .create(gpa);
-        value_ptr.* = self;
-        return value_ptr;
     }
 };
 
 const List = struct {
-    elems: []const *IValue,
+    elems: []IValue,
     const Self = @This();
+
+    pub fn makePointer(self: Self, gpa: Allocator) !*Self {
+        const list_ptr: *Self = try gpa.create(Self);
+        list_ptr.* = self;
+        return list_ptr;
+    }
 
     pub fn clear(self: *Self, gpa: Allocator) void {
         for (self.elems) |elem| elem.clearAndDestroy(gpa);
     }
 
     pub inline fn get(self: *Self, index: u32) IValue {
-        return self.elems[index].*;
+        return self.elems[index];
     }
 
     pub inline fn set(self: *Self, index: u32, value: *IValue) !void {
@@ -246,7 +235,7 @@ const HashMap = struct {
                 .string => |string| hasher.update(string),
                 .list => |list| {
                     std.hash.autoHash(hasher, list.elems.len);
-                    for (list.elems) |elem_ptr| deepHash(hasher, elem_ptr.*);
+                    for (list.elems) |elem| deepHash(hasher, elem);
                 },
                 .hash_map => |hash_map| std.hash.autoHash(hasher, hash_map.inner.count()),
                 else => unreachable,
@@ -254,10 +243,16 @@ const HashMap = struct {
         }
     };
 
-    pub fn create(gpa: Allocator, keys: []*IValue, values: []*IValue) !Self {
+    pub fn init(gpa: Allocator, keys: []IValue, values: []IValue) !Self {
         var inner: std.HashMap(IValue, IValue, Context, 80) = .init(gpa);
-        for (keys, values) |key, value| try inner.put(key.*, value.*);
+        for (keys, values) |key, value| try inner.put(key, value);
         return .{ .inner = inner };
+    }
+
+    pub fn makePointer(self: Self, gpa: Allocator) !*Self {
+        const hash_map_ptr: *Self = try gpa.create(Self);
+        hash_map_ptr.* = self;
+        return hash_map_ptr;
     }
 
     pub fn clear(self: *Self) void {
@@ -278,7 +273,7 @@ const HashMap = struct {
     }
 };
 
-const IFunc = *const fn (*Interpreter, []*IValue) Error!IValue;
+const IFunc = *const fn (*Interpreter, []IValue) Error!IValue;
 
 fn deepEqual(lhs: IValue, rhs: IValue) bool {
     if (!lhs.is(meta.activeTag(rhs))) return false;
@@ -288,8 +283,9 @@ fn deepEqual(lhs: IValue, rhs: IValue) bool {
         .string => |string| std.mem.eql(u8, string, rhs.string),
         .list => |list| ret: {
             if (list.elems.len != rhs.list.elems.len) break :ret false;
-            for (list.elems, rhs.list.elems) |elem_ptr, rhs_elem_ptr|
-                if (!deepEqual(elem_ptr.*, rhs_elem_ptr.*)) break :ret false;
+            for (list.elems, rhs.list.elems) |elem, rhs_elem| {
+                if (!deepEqual(elem, rhs_elem)) break :ret false;
+            }
             break :ret true;
         },
         .hash_map => |hash_map| ret: {
@@ -298,8 +294,7 @@ fn deepEqual(lhs: IValue, rhs: IValue) bool {
             var rhs_it = rhs.hash_map.inner.iterator();
             while (it.next()) |pair| {
                 const rhs_pair = rhs_it.next().?;
-                const pair_key, const rhs_pair_key =
-                    .{ pair.key_ptr.*, rhs_pair.key_ptr.* };
+                const pair_key, const rhs_pair_key = .{ pair.key_ptr.*, rhs_pair.key_ptr.* };
                 if (!deepEqual(pair_key, rhs_pair_key)) break :ret false;
             }
             break :ret true;
@@ -319,6 +314,12 @@ const IMatrix = struct {
     columns: u32,
     data: []*IValue,
     const Self = @This();
+
+    pub fn makePointer(self: Self, gpa: Allocator) !*Self {
+        const matrix_ptr: *Self = try gpa.create(Self);
+        matrix_ptr.* = self;
+        return matrix_ptr;
+    }
 
     pub fn init(gpa: Allocator, rows: u32, columns: u32) !Self {
         const data = try gpa.alloc(*IValue, rows * columns);
@@ -377,34 +378,32 @@ pub fn visit(i: *Interpreter, index: ast.Index) Error!IValue {
 // Literals
 // ------------------------------------------------------------------------------------------------
 
-fn listLiteral(i: *Interpreter, list: ast.List) !List {
+fn listLiteral(i: *Interpreter, list: ast.List) !*List {
     const len = list.elems.len;
-    var elems = try i.arena.alloc(*IValue, len);
+    var elems = try i.arena.alloc(IValue, len);
     for (0.., list.elems) |j, elem| {
-        elems[j] = try .create(i.arena);
-        elems[j].* = try i.visit(elem);
+        elems[j] = try i.visit(elem);
     }
-    return .{ .elems = elems };
+    const list_: List = .{ .elems = elems };
+    return list_.makePointer(i.arena);
 }
 
-fn listComp(i: *Interpreter, list_comp: ast.ListComp) !List {
+fn listComp(i: *Interpreter, list_comp: ast.ListComp) !*List {
     const iter = try i.visit(list_comp.iter);
     const variable = list_comp.variable;
-    const elems = try i.arena.alloc(*IValue, iter.len().?);
+    const elems = try i.arena.alloc(IValue, iter.len().?);
     switch (iter) {
         .string => |string| {
             for (0.., string) |j, char| {
                 const buf = [1]u8{char};
                 try i.setVar(variable, .{ .string = &buf });
-                elems[j] = try .create(i.arena);
-                elems[j].* = try i.visit(list_comp.expr);
+                elems[j] = try i.visit(list_comp.expr);
             }
         },
         .list => |list| {
-            for (0.., list.elems) |j, elem_ptr| {
-                try i.setVar(variable, elem_ptr.*);
-                elems[j] = try .create(i.arena);
-                elems[j].* = try i.visit(list_comp.expr);
+            for (0.., list.elems) |j, elem| {
+                try i.setVar(variable, elem);
+                elems[j] = try i.visit(list_comp.expr);
             }
         },
         .hash_map => |hash_map| {
@@ -412,27 +411,25 @@ fn listComp(i: *Interpreter, list_comp: ast.ListComp) !List {
             var j: usize = 0;
             while (it.next()) |key_ptr| : (j += 1) {
                 try i.setVar(variable, key_ptr.*);
-                elems[j] = try .create(i.arena);
-                elems[j].* = try i.visit(list_comp.expr);
+                elems[j] = try i.visit(list_comp.expr);
             }
         },
         else => return i.fail("Invalid type for list comprehension iterable", null),
     }
-    return .{ .elems = elems };
+    const list_: List = .{ .elems = elems };
+    return list_.makePointer(i.arena);
 }
 
-fn hashMapLiteral(i: *Interpreter, hash_map: ast.HashMap) !HashMap {
+fn hashMapLiteral(i: *Interpreter, hash_map: ast.HashMap) !*HashMap {
     const len = hash_map.keys.len;
-    var keys = try i.arena.alloc(*IValue, len);
-    var values = try i.arena.alloc(*IValue, len);
+    var keys = try i.arena.alloc(IValue, len);
+    var values = try i.arena.alloc(IValue, len);
     for (0.., hash_map.keys, hash_map.values) |j, key, value| {
-        keys[j] = try .create(i.arena);
-        keys[j].* = try i.visit(key);
-
-        values[j] = try .create(i.arena);
-        values[j].* = try i.visit(value);
+        keys[j] = try i.visit(key);
+        values[j] = try i.visit(value);
     }
-    return .create(i.arena, keys, values);
+    const hash_map_: HashMap = try .init(i.arena, keys, values);
+    return hash_map_.makePointer(i.arena);
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -471,11 +468,14 @@ fn add(i: *Interpreter, lhs: IValue, rhs: IValue) !IValue {
     return switch (lhs) {
         .int => .{ .int = lhs.int + rhs.int },
         .string => .{ .string = try std.mem.concat(i.arena, u8, &.{ lhs.string, rhs.string }) },
-        .list => .{ .list = .{ .elems = try std.mem.concat(
-            i.arena,
-            *IValue,
-            &.{ lhs.list.elems, rhs.list.elems },
-        ) } },
+        .list => list: {
+            const list_: List = .{ .elems = try std.mem.concat(
+                i.arena,
+                IValue,
+                &.{ lhs.list.elems, rhs.list.elems },
+            ) };
+            break :list .{ .list = try list_.makePointer(i.arena) };
+        },
         else => i.fail("Invalid type for addition operation", error.TypeError),
     };
 }
@@ -488,31 +488,30 @@ fn subtr(i: *Interpreter, lhs: IValue, rhs: IValue) !IValue {
 }
 
 fn mult(i: *Interpreter, lhs: IValue, rhs: IValue) !IValue {
-    if (lhs.is(.int) and (rhs.is(.string) or rhs.is(.list)))
-        return i.mult(rhs, lhs);
+    if (lhs.is(.int) and (rhs.is(.string) or rhs.is(.list))) return i.mult(rhs, lhs);
 
-    return switch (lhs) {
-        .int => if (rhs.is(.int))
-            .{ .int = lhs.int * rhs.int }
-        else
-            i.fail("Cannot multiply integer by non-integer", error.TypeError),
-        .string => |string| if (rhs.is(.int)) ret: {
-            if (rhs.int < 1)
+    switch (lhs) {
+        .int => if (rhs.is(.int)) {
+            return .{ .int = lhs.int * rhs.int };
+        } else return i.fail("Cannot multiply integer by non-integer", error.TypeError),
+        .string => |string| if (rhs.is(.int)) {
+            if (rhs.int < 1) {
                 return i.fail("String multiplier must not be negative", error.TypeError);
+            }
             const smu: usize = @intCast(rhs.int);
             var buf = try i.arena.alloc(u8, string.len * smu);
             for (0..smu) |j| {
                 const start = j * string.len;
                 @memcpy(buf[start .. start + string.len], string);
             }
-            break :ret .{ .string = buf };
-        } else i.fail("Cannot multiply string by non-integer", error.TypeError),
-        .list => |list| if (rhs.is(.int)) ret: {
-            for (list.elems) |elem_ptr| elem_ptr.* = try i.mult(elem_ptr.*, rhs);
-            break :ret lhs;
-        } else i.fail("Cannot multiply list by non-int", error.TypeError),
-        else => i.fail("Invalid type for multiplication", error.TypeError),
-    };
+            return .{ .string = buf };
+        } else return i.fail("Cannot multiply string by non-integer", error.TypeError),
+        .list => |list| if (rhs.is(.int)) {
+            for (0.., list.elems) |j, elem| list.elems[j] = try i.mult(elem, rhs);
+            return lhs;
+        } else return i.fail("Cannot multiply list by non-int", error.TypeError),
+        else => return i.fail("Invalid type for multiplication", error.TypeError),
+    }
 }
 
 fn div(i: *Interpreter, lhs: IValue, rhs: IValue) !IValue {
@@ -531,6 +530,7 @@ fn power(i: *Interpreter, lhs: IValue, rhs: IValue) !IValue {
 
 fn equal(i: *Interpreter, lhs: IValue, rhs: IValue) !IValue {
     _ = i;
+    if (!lhs.is(meta.activeTag(rhs))) return error.TypeError;
     return .{ .boolean = deepEqual(lhs, rhs) };
 }
 
@@ -539,39 +539,34 @@ fn notEqual(i: *Interpreter, lhs: IValue, rhs: IValue) !IValue {
 }
 
 fn lessThan(i: *Interpreter, lhs: IValue, rhs: IValue) !IValue {
+    const _reason = "Can only tell whether one integer is less than (LT) another";
     return switch (lhs) {
         .int => .{ .boolean = lhs.int < rhs.int },
-        else => i.fail("Can only tell whether one integer is less than (LT) another", error.TypeError),
+        else => i.fail(_reason, error.TypeError),
     };
 }
 
 fn lessOrEqualThan(i: *Interpreter, lhs: IValue, rhs: IValue) !IValue {
+    const _reason = "Can only tell whether one integer is less or equal than (LET) another";
     return switch (lhs) {
         .int => .{ .boolean = lhs.int <= rhs.int },
-        else => i.fail(
-            "Can only tell whether one integer is less or equal than (LET) another",
-            error.TypeError,
-        ),
+        else => i.fail(_reason, error.TypeError),
     };
 }
 
 fn greaterThan(i: *Interpreter, lhs: IValue, rhs: IValue) !IValue {
+    const _reason = "Can only tell whether one integer is greater than (GT) another";
     return switch (lhs) {
         .int => .{ .boolean = lhs.int > rhs.int },
-        else => i.fail(
-            "Can only tell whether one integer is greater than (GT) another",
-            error.TypeError,
-        ),
+        else => i.fail(_reason, error.TypeError),
     };
 }
 
 fn greaterOrEqualThan(i: *Interpreter, lhs: IValue, rhs: IValue) !IValue {
+    const _reason = "Can only tell whether one integer is greater or equal than (GET) another";
     return switch (lhs) {
         .int => .{ .boolean = lhs.int >= rhs.int },
-        else => i.fail(
-            "Can only tell whether one integer is greater or equal than (GET) another",
-            error.TypeError,
-        ),
+        else => i.fail(_reason, error.TypeError),
     };
 }
 
@@ -586,19 +581,20 @@ fn logicOr(i: *Interpreter, lhs: IValue, rhs: IValue) !IValue {
 }
 
 fn isIn(i: *Interpreter, lhs: IValue, rhs: IValue) !IValue {
-    return switch (rhs) {
-        .string => |str| val: {
+    switch (rhs) {
+        .string => |str| {
             if (lhs != .string) return i.fail("Both sides must be strings", null);
-            break :val .{ .boolean = std.mem.indexOf(u8, str, lhs.string) != null };
+            return .{ .boolean = std.mem.indexOf(u8, str, lhs.string) != null };
         },
-        .list => |list| val: {
-            for (list.elems) |elem_ptr| if (deepEqual(lhs, elem_ptr.*))
-                break :val .{ .boolean = true };
-            break :val .{ .boolean = false };
+        .list => |list| {
+            for (list.elems) |elem| {
+                if (deepEqual(lhs, elem)) return .{ .boolean = true };
+            }
+            return .{ .boolean = false };
         },
-        .hash_map => |hash_map| .{ .boolean = hash_map.inner.contains(lhs) },
+        .hash_map => |hash_map| return .{ .boolean = hash_map.inner.contains(lhs) },
         else => return i.fail("Cannot tell whether LHS is in RHS (invalid type)", null),
-    };
+    }
 }
 
 fn condExpr(i: *Interpreter, cond_expr: ast.CondExpr) !IValue {
@@ -622,12 +618,12 @@ inline fn isTruthy(value: IValue) bool {
 // ------------------------------------------------------------------------------------------------
 
 fn indexExpr(i: *Interpreter, index_expr: ast.IndexExpr) !IValue {
-    var target = try i.visit(index_expr.target);
+    const target = try i.visit(index_expr.target);
     const index = try i.visit(index_expr.index);
     // TODO: Support indexing into IMatrix.
     return switch (target) {
-        .hash_map => |*hash_map| hash_map.get(index) orelse .none,
-        .list => |*list| ret: {
+        .hash_map => |hash_map| hash_map.get(index) orelse .none,
+        .list => |list| ret: {
             if (index.int >= list.elems.len)
                 break :ret i.fail("List index out of bounds", null);
             break :ret list.get(@intCast(index.int));
@@ -662,8 +658,8 @@ fn forStmt(i: *Interpreter, for_stmt: ast.ForStmt) !IValue {
 
     switch (iter) {
         .list => |list| {
-            for (list.elems) |elem_ptr| {
-                try i.setVar(variable, elem_ptr.*);
+            for (list.elems) |elem| {
+                try i.setVar(variable, elem);
                 _ = try i.block(start, len);
                 try i.setVar(variable, .none);
             }
@@ -716,12 +712,10 @@ fn call(i: *Interpreter, call_: ast.Call) !IValue {
         .expr => return i.callExpr(call_),
     };
 
-    var args = try i.arena.alloc(*IValue, call_.args_len);
+    var args = try i.arena.alloc(IValue, call_.args_len);
     for (0..call_.args_len) |offset| {
         const arg_node_index = i.tree.adpb[@intCast(call_.args_start + offset)];
-
-        args[offset] = try IValue.create(i.arena);
-        args[offset].* = try i.visit(arg_node_index);
+        args[offset] = try i.visit(arg_node_index);
     }
 
     return switch (callable) {
@@ -746,20 +740,20 @@ fn callExpr(i: *Interpreter, expr_call: ast.Call) Error!IValue {
         .ident => |ident| i.callExprIdent(ident, args),
         .bin_expr => |bin_expr| i.callBinExpr(bin_expr, args),
         .cond_expr => |cond_expr| i.callCondExpr(cond_expr, args),
-        // TODO: This should not be returned, but passed as an argument to the call.
-        .call => |call_| i.callInnerExpr(call_.args_start, args),
         else => i.fail("This type of node is disallowed/unsupported", null),
     };
 }
 
 fn callBinExpr(i: *Interpreter, bin_expr: ast.BinExpr, args: CallArgs) !IValue {
-    const lhs = try i.visitCallable(bin_expr.lhs, args);
-    const rhs = try i.visitCallable(bin_expr.rhs, args);
-    if ((lhs.is(.int) or lhs.is(.string) or lhs.is(.boolean)) and rhs.is(.list))
-        return i.callBinExpr(
-            .{ .lhs = bin_expr.rhs, .op = bin_expr.op, .rhs = bin_expr.lhs },
-            args,
-        );
+    const lhs = try i.visitc(bin_expr.lhs, args);
+    const rhs = try i.visitc(bin_expr.rhs, args);
+    if ((lhs.is(.int) or lhs.is(.string) or lhs.is(.boolean)) and rhs.is(.list)) {
+        return i.callBinExpr(.{
+            .lhs = bin_expr.rhs,
+            .op = bin_expr.op,
+            .rhs = bin_expr.lhs,
+        }, args);
+    }
 
     if (lhs.is(.list)) switch (bin_expr.op) {
         .equal,
@@ -770,38 +764,40 @@ fn callBinExpr(i: *Interpreter, bin_expr: ast.BinExpr, args: CallArgs) !IValue {
         .less_or_equal_than,
         => {
             const len = lhs.len().?;
-            const elems = try i.arena.alloc(*IValue, len);
+            const elems = try i.arena.alloc(IValue, len);
             for (0..len) |j| {
-                elems[j] = try .create(i.arena);
-                const res = try i.bin(bin_expr.op, lhs.list.elems[j].*, rhs);
-                elems[j].* = res;
+                const res = try i.bin(bin_expr.op, lhs.list.elems[j], rhs);
+                elems[j] = res;
             }
-            return .{ .list = .{ .elems = elems } };
+            const list: List = .{ .elems = elems };
+            return .{ .list = try list.makePointer(i.arena) };
         },
         else => return i.fail("Invalid binary operation inside of a callable expression", null),
     } else return i.bin(bin_expr.op, lhs, rhs);
 }
 
 fn callCondExpr(i: *Interpreter, cond_expr: ast.CondExpr, args: CallArgs) !IValue {
-    const if_cond = try i.visitCallable(cond_expr.if_cond, args);
-    return if (isTruthy(if_cond))
-        i.visitCallable(cond_expr.then, args)
-    else
-        i.visitCallable(cond_expr.else_expr, args);
+    const if_cond = try i.visitc(cond_expr.if_cond, args);
+    if (isTruthy(if_cond)) {
+        return i.visitc(cond_expr.then, args);
+    } else {
+        return i.visitc(cond_expr.else_expr, args);
+    }
 }
 
-fn visitCallable(i: *Interpreter, index: ast.Index, args: CallArgs) !IValue {
+fn visitc(i: *Interpreter, index: ast.Index, args: CallArgs) !IValue {
     const node = i.getNode(index);
-    return if (node.is(.ident))
-        i.callExprIdent(node.ident, args)
-    else if (node.is(.bin_expr))
-        i.callExpr(.{
+    if (node.is(.ident)) {
+        return i.callExprIdent(node.ident, args);
+    } else if (node.is(.bin_expr)) {
+        return i.callExpr(.{
             .callable = .{ .expr = index },
             .args_start = args.start,
             .args_len = args.len,
-        })
-    else
-        i.visit(index);
+        });
+    } else {
+        return i.visit(index);
+    }
 }
 
 fn callExprIdent(i: *Interpreter, ident: []const u8, args: CallArgs) Error!IValue {
@@ -816,20 +812,17 @@ fn callExprIdent(i: *Interpreter, ident: []const u8, args: CallArgs) Error!IValu
     };
 }
 
-fn callInnerExpr(i: *Interpreter, index: ast.Index, args: CallArgs) !IValue {
-    const expr = i.tree.adpb[@intCast(index)];
-    if (args.len != 1)
-        return i.fail("Chained calls cannot be distributed more than once", null);
-    return i.callExpr(.{
-        .callable = .{ .expr = expr },
-        .args_start = args.start,
-        .args_len = args.len,
-    });
+// TODO: Call chaining (functions as arguments).
+fn callChain(i: *Interpreter, outer: []const u8, inner: ast.Index, args: CallArgs) !IValue {
+    _ = i;
+    _ = outer;
+    _ = inner;
+    _ = args;
 }
 
 const CallArgs = struct { start: ast.Index, len: u32 };
 
-fn callFn(i: *Interpreter, fn_index: ast.Index, args: []*IValue) !IValue {
+fn callFn(i: *Interpreter, fn_index: ast.Index, args: []IValue) !IValue {
     const fn_def = i.tree.nodes[fn_index].fn_def;
 
     const init_local = i.local;
@@ -844,9 +837,8 @@ fn callFn(i: *Interpreter, fn_index: ast.Index, args: []*IValue) !IValue {
     for (0..fn_def.args_len) |offset| {
         const param_node_index = i.tree.adpb[fn_def.args_start + offset];
         const param_name = i.tree.nodes[param_node_index].ident;
-        try i.setVar(param_name, args[offset].*);
+        try i.setVar(param_name, args[offset]);
     }
-
     return i.block(fn_def.body_start, fn_def.body_len);
 }
 
@@ -867,16 +859,16 @@ fn opArg(i: *Interpreter, bin_op: ast.BinOp) !IValue {
 // Built-in functions
 // ------------------------------------------------------------------------------------------------
 
-fn builtinPrint(i: *Interpreter, args: []*IValue) !IValue {
+fn builtinPrint(i: *Interpreter, args: []IValue) !IValue {
     for (args, 0..) |arg, j| {
-        switch (arg.*) {
+        switch (arg) {
             .int => |int| i.iprint("{d}", .{int}),
             .string => |string| i.iprint("{s}", .{string}),
             .boolean => |boolean| i.iprint("{}", .{boolean}),
             .list => |list| i.iprint("List(len={d})", .{list.elems.len}),
             .hash_map => |hash_map| i.iprint("Map(len={d})", .{hash_map.inner.count()}),
             .imatrix => |imatrix| i.iprint("IMatrix({d}x{d})", .{ imatrix.rows, imatrix.columns }),
-            else => i.iprint("IValue at {*}: {any}", .{ arg, arg }),
+            else => i.iprint("IValue: {any}", .{arg}),
         }
         if (j < args.len - 1) i.iprint(" ", .{});
     }
@@ -889,55 +881,52 @@ fn iprint(i: *Interpreter, comptime format: []const u8, args: anytype) void {
     i.writer.print(format, args) catch unreachable;
 }
 
-fn builtinTokens(i: *Interpreter, args: []*IValue) !IValue {
-    if (args.len != 1) return i.fail("Expected only 1 string as an argument", error.BuiltinFailed);
+fn builtinTokens(i: *Interpreter, args: []IValue) !IValue {
+    if (args.len != 1) {
+        return i.fail("Expected only 1 string as an argument", error.BuiltinFailed);
+    }
 
     const string: []const u8 = args[0].string;
-    const elems = try i.arena.alloc(*IValue, string.len);
-    for (0.., string) |j, char| {
-        elems[j] = try .create(i.arena);
-        elems[j].* = .{ .string = try i.arena.dupe(u8, &[1]u8{char}) };
-    }
+    const elems = try i.arena.alloc(IValue, string.len);
+    for (0.., string) |j, char| elems[j] = .{ .string = try i.arena.dupe(u8, &[1]u8{char}) };
     const list: List = .{ .elems = elems };
-    return .{ .list = list };
+    return .{ .list = try list.makePointer(i.arena) };
 }
 
-fn builtinIndicator(i: *Interpreter, args: []*IValue) !IValue {
-    if (args.len != 1)
+fn builtinIndicator(i: *Interpreter, args: []IValue) !IValue {
+    if (args.len != 1) {
         return i.fail("Expected only 1 list of booleans as an argument", error.BuiltinFailed);
+    }
 
     const value = args[0];
-    const elems = try i.arena.alloc(*IValue, value.len().?);
-    for (0.., value.list.elems) |j, elem_ptr| {
-        elems[j] = try .create(i.arena);
-        elems[j].* = if (elem_ptr.boolean) .{ .int = 1 } else .{ .int = 0 };
+    const elems = try i.arena.alloc(IValue, value.len().?);
+    for (0.., value.list.elems) |j, elem| {
+        elems[j] = if (elem.boolean) .{ .int = 1 } else .{ .int = 0 };
     }
     const list: List = .{ .elems = elems };
-    return .{ .list = list };
+    return .{ .list = try list.makePointer(i.arena) };
 }
 
-fn builtinIndices(i: *Interpreter, args: []*IValue) !IValue {
-    if (args.len != 1) return i.fail("Expected only 1 string as an argument", error.BuiltinFailed);
+fn builtinIndices(i: *Interpreter, args: []IValue) !IValue {
+    if (args.len != 1) {
+        return i.fail("Expected only 1 string as an argument", error.BuiltinFailed);
+    }
 
     const string: []const u8 = args[0].string;
-    const elems = try i.arena.alloc(*IValue, string.len);
-    for (0..string.len) |j| {
-        elems[j] = try .create(i.arena);
-        elems[j].* = .{ .int = @intCast(j) };
-    }
+    const elems = try i.arena.alloc(IValue, string.len);
+    for (0..string.len) |j| elems[j] = .{ .int = @intCast(j) };
     const list: List = .{ .elems = elems };
-    return .{ .list = list };
+    return .{ .list = try list.makePointer(i.arena) };
 }
 
-fn builtinSelect(i: *Interpreter, args: []*IValue) !IValue {
-    if (args.len != 3) return i.fail(
-        "Expected exactly 3 arguments: 2 collections and 1 operational argument",
-        error.BuiltinFailed,
-    );
+fn builtinSelect(i: *Interpreter, args: []IValue) !IValue {
+    if (args.len != 3) {
+        const _reason = "Expected exactly 3 arguments: 2 collections and 1 operational argument";
+        return i.fail(_reason, error.BuiltinFailed);
+    }
 
-    const lhs: List = args[0].list;
-    const op_arg: ast.BinOp = args[2].op_arg;
-    const rhs: List = args[1].list;
+    const lhs, const rhs = .{ args[0].list, args[1].list };
+    const op_arg = args[2].op_arg;
     var imatrix: IMatrix = try .init(i.arena, @intCast(rhs.elems.len), @intCast(lhs.elems.len));
 
     for (0.., rhs.elems) |row, rhs_elem| {
@@ -952,22 +941,22 @@ fn builtinSelect(i: *Interpreter, args: []*IValue) !IValue {
                 else => unreachable,
             };
             const imatrix_elem: *IValue = try .create(i.arena);
-            imatrix_elem.* = try f(i, lhs_elem.*, rhs_elem.*);
+            imatrix_elem.* = try f(i, lhs_elem, rhs_elem);
             imatrix.set(@intCast(row), @intCast(column), imatrix_elem);
         }
     }
-    return .{ .imatrix = imatrix };
+    return .{ .imatrix = try imatrix.makePointer(i.arena) };
 }
 
-fn builtinAggregate(i: *Interpreter, args: []*IValue) Error!IValue {
-    if (args.len != 2) return i.fail(
-        "Exactly 2 arguments expected: selector matrix and a collection",
-        error.BuiltinFailed,
-    );
+fn builtinAggregate(i: *Interpreter, args: []IValue) Error!IValue {
+    if (args.len != 2) {
+        const _reason = "Exactly 2 arguments expected: selector matrix and a collection";
+        return i.fail(_reason, error.BuiltinFailed);
+    }
 
     const selector = args[0].imatrix;
     const in = args[1].list;
-    var elems = try i.arena.alloc(*IValue, in.elems.len);
+    var elems = try i.arena.alloc(IValue, in.elems.len);
     for (0..selector.rows) |row| {
         var acc: i64, var agg: u32 = .{ 0, 0 };
         for (0.., in.elems) |column, in_elem| {
@@ -977,11 +966,10 @@ fn builtinAggregate(i: *Interpreter, args: []*IValue) Error!IValue {
             }
         }
         const elem = if (agg > 0) @divFloor(acc, agg) else 0;
-        elems[row] = try .create(i.arena);
-        elems[row].* = .{ .int = elem };
+        elems[row] = .{ .int = elem };
     }
     const list: List = .{ .elems = elems };
-    return .{ .list = list };
+    return .{ .list = try list.makePointer(i.arena) };
 }
 
 const std = @import("std");

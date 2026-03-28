@@ -22,13 +22,18 @@ pub fn peek(t: *Tokenizer) Token {
 pub fn next(t: *Tokenizer) Token {
     var token: Token = .{ .tag = .invalid };
     t.skipWhitespaces();
-    if (t.index >= t.source.len)
-        return .{ .tag = .eof, .lexeme = "EOF", .location = .{ .line = t.line + 1, .column = 0 } };
+    if (t.index >= t.source.len) {
+        return .{
+            .tag = .eof,
+            .lexeme = "EOF",
+            .location = .{ .line = t.line + 1, .column = 0 },
+        };
+    }
     const start = t.index;
     const current = t.source[t.index];
     t.step();
 
-    token.tag = sw: switch (current) {
+    token.tag = tag: switch (current) {
         'a'...'z', 'A'...'Z', '_' => {
             while (t.index < t.source.len) {
                 const sub = t.source[t.index];
@@ -38,9 +43,9 @@ pub fn next(t: *Tokenizer) Token {
                 }
             }
             const lexeme = t.source[start..t.index];
-            if (Token.keyword(lexeme)) |tag| break :sw tag else {
+            if (Token.keyword(lexeme)) |tag| break :tag tag else {
                 token.lexeme = lexeme;
-                break :sw .ident;
+                break :tag .ident;
             }
         },
 
@@ -53,7 +58,7 @@ pub fn next(t: *Tokenizer) Token {
                 }
             }
             token.lexeme = t.source[start..t.index];
-            break :sw .int_literal;
+            break :tag .int_literal;
         },
 
         '"' => {
@@ -61,24 +66,24 @@ pub fn next(t: *Tokenizer) Token {
             while (t.index < t.source.len and t.source[t.index] != '"') t.step();
             t.step();
             token.lexeme = t.source[start + 1 .. t.index - 1];
-            break :sw .string_literal;
+            break :tag .string_literal;
         },
 
         '=' => if (t.match('=')) {
             t.step();
-            break :sw .double_equal;
+            break :tag .double_equal;
         } else .equal,
         '!' => if (t.match('=')) {
             t.step();
-            break :sw .bang_equal;
+            break :tag .bang_equal;
         } else .invalid,
         '>' => if (t.match('=')) {
             t.step();
-            break :sw .greater_or_equal_than;
+            break :tag .greater_or_equal_than;
         } else .greater_than,
         '<' => if (t.match('=')) {
             t.step();
-            break :sw .less_or_equal_than;
+            break :tag .less_or_equal_than;
         } else .less_than,
 
         else => |char| std.enums.fromInt(Token.Tag, char) orelse .invalid,
@@ -169,9 +174,9 @@ fn skipWhitespaces(t: *Tokenizer) void {
 }
 
 fn step(t: *Tokenizer) void {
-    if (t.match('\n'))
-        t.column, t.line = .{ 1, t.line + 1 }
-    else if (t.match('\t')) t.column += 8 else t.column += 1;
+    if (t.match('\n')) {
+        t.column, t.line = .{ 1, t.line + 1 };
+    } else if (t.match('\t')) t.column += 8 else t.column += 1;
     t.index += 1;
 }
 
