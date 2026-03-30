@@ -29,10 +29,9 @@ pub fn main() !void {
         // \\Print(evaluated);
         // \\comprehension = [i + "d" for i in {"a": 0, "b": 1}];
         // \\Print(comprehension[1]);
-        \\lazy = (Tokens == "e");
-        \\matches = lazy("Hey");
+        \\matches = (Tokens != "e")("Hey!");
         \\indicated = Indicator(matches)[1];
-        \\Print(indicated);
+        \\Print(matches, indicated);
     ;
 
     var tokenizer: Tokenizer = .init(source);

@@ -321,11 +321,42 @@ pub const Parser = struct {
         return self.push(.{ .call = call });
     }
 
+    // TODO: At the moment, there're multiple arguments emerging, when there's
+    // a single callable expression being passed as an argument to a function.
+    // The following:
+    // ```
+    // Print((Tokens != "!")(Hey!));
+    // ```
+    // hould return this node:
+    // ```
+    // Call(name: Print):
+    // Args:
+    //     Call(expr:
+    //         BinExpr(!=):
+    //             Ident(Tokens)
+    //             String("!")
+    //     )
+    //         Args:
+    //             String("Hey!")
+    // ```
+    // However, an extra gets in somehow:
+    // ```
+    // Call(name: Print):
+    // Args:
+    //     String("Hey!") <- This should not be here!
+    //     Call(expr:
+    //         BinExpr(!=):
+    //             Ident(Tokens)
+    //             String("!")
+    //     )
+    //         Args:
+    //             String("Hey!")
+    // ```
+    // This needs to be fixed.
     fn callArgs(self: *Self) !struct { Index, Index } {
         const args_start: Index = @intCast(self.adpb.items.len);
-        while (true) {
-            if (self.match(.right_paren)) break;
-            const arg = self.expr() catch blk: {
+        while (!self.match(.right_paren)) {
+            const arg = self.expr() catch op: {
                 const op_arg: BinOp = switch (self.current.tag) {
                     .double_equal => .equal,
                     .bang_equal => .not_equal,
@@ -334,15 +365,16 @@ pub const Parser = struct {
                     .less_than => .less_than,
                     .less_or_equal_than => .less_or_equal_than,
 
-                    else => return self.fail(.{ .description = "bin comp" }),
+                    else => return self.fail(.{ .description = "Invalid op-arg" }),
                 };
                 self.step();
 
-                break :blk try self.push(.{ .op_arg = op_arg });
+                break :op try self.push(.{ .op_arg = op_arg });
             };
             try self.adpb.append(self.gpa, arg);
 
-            if (self.match(.comma)) self.step();
+            self.expect(.comma) catch break;
+            self.step();
         }
         self.step();
 
@@ -539,8 +571,8 @@ pub const Node = union(enum) {
     call: Call,
     op_arg: BinOp,
     for_stmt: ForStmt,
-
     const Self = @This();
+
     pub inline fn is(self: Self, tag: std.meta.Tag(Self)) bool {
         return self == tag;
     }

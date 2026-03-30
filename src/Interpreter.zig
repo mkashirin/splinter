@@ -131,19 +131,11 @@ pub const IValue = union(enum) {
     fn_index: ast.Index,
     imatrix: *IMatrix,
     lazy_index: ast.Index,
-
-    // TODO: Figure out, how to NOT store this as a massive IValue object,
-    // passing it as a simple enum member instead.
     op_arg: ast.BinOp,
-
     const Self = @This();
 
     pub inline fn is(self: Self, tag: meta.Tag(Self)) bool {
         return self == tag;
-    }
-
-    pub fn create(gpa: Allocator) !*Self {
-        return gpa.create(Self);
     }
 
     pub fn clearAndDestroy(self: *Self, gpa: Allocator) void {
@@ -312,7 +304,7 @@ const IMatrix = struct {
     gpa: Allocator,
     rows: u32,
     columns: u32,
-    data: []*IValue,
+    data: []IValue,
     const Self = @This();
 
     pub fn makePointer(self: Self, gpa: Allocator) !*Self {
@@ -322,9 +314,8 @@ const IMatrix = struct {
     }
 
     pub fn init(gpa: Allocator, rows: u32, columns: u32) !Self {
-        const data = try gpa.alloc(*IValue, rows * columns);
-        const none: *IValue = try .create(gpa);
-        none.* = .none;
+        const data = try gpa.alloc(IValue, rows * columns);
+        const none: IValue = .none;
         @memset(data, none);
 
         return .{ .gpa = gpa, .rows = rows, .columns = columns, .data = data };
@@ -341,11 +332,11 @@ const IMatrix = struct {
         return r * self.columns + c;
     }
 
-    pub fn get(self: Self, r: u32, c: u32) *IValue {
+    pub fn get(self: Self, r: u32, c: u32) IValue {
         return self.data[self.index(r, c)];
     }
 
-    pub fn set(self: *Self, r: u32, c: u32, value: *IValue) void {
+    pub fn set(self: *Self, r: u32, c: u32, value: IValue) void {
         self.data[self.index(r, c)] = value;
     }
 };
@@ -862,22 +853,22 @@ fn opArg(i: *Interpreter, bin_op: ast.BinOp) !IValue {
 fn builtinPrint(i: *Interpreter, args: []IValue) !IValue {
     for (args, 0..) |arg, j| {
         switch (arg) {
-            .int => |int| i.iprint("{d}", .{int}),
-            .string => |string| i.iprint("{s}", .{string}),
-            .boolean => |boolean| i.iprint("{}", .{boolean}),
-            .list => |list| i.iprint("List(len={d})", .{list.elems.len}),
-            .hash_map => |hash_map| i.iprint("Map(len={d})", .{hash_map.inner.count()}),
-            .imatrix => |imatrix| i.iprint("IMatrix({d}x{d})", .{ imatrix.rows, imatrix.columns }),
-            else => i.iprint("IValue: {any}", .{arg}),
+            .int => |int| i.uprint("{d}", .{int}),
+            .string => |string| i.uprint("{s}", .{string}),
+            .boolean => |boolean| i.uprint("{}", .{boolean}),
+            .list => |list| i.uprint("List(len={d})", .{list.elems.len}),
+            .hash_map => |hash_map| i.uprint("Map(len={d})", .{hash_map.inner.count()}),
+            .imatrix => |imatrix| i.uprint("IMatrix({d}x{d})", .{ imatrix.rows, imatrix.columns }),
+            else => i.uprint("IValue: {any}", .{arg}),
         }
-        if (j < args.len - 1) i.iprint(" ", .{});
+        if (j < args.len - 1) i.uprint(" ", .{});
     }
-    i.iprint("\n", .{});
+    i.uprint("\n", .{});
     return .none;
 }
 
 /// Infallible print.
-fn iprint(i: *Interpreter, comptime format: []const u8, args: anytype) void {
+fn uprint(i: *Interpreter, comptime format: []const u8, args: anytype) void {
     i.writer.print(format, args) catch unreachable;
 }
 
@@ -927,25 +918,24 @@ fn builtinSelect(i: *Interpreter, args: []IValue) !IValue {
 
     const lhs, const rhs = .{ args[0].list, args[1].list };
     const op_arg = args[2].op_arg;
-    var imatrix: IMatrix = try .init(i.arena, @intCast(rhs.elems.len), @intCast(lhs.elems.len));
+    var matrix: IMatrix = try .init(i.arena, @intCast(rhs.elems.len), @intCast(lhs.elems.len));
 
     for (0.., rhs.elems) |row, rhs_elem| {
         for (0.., lhs.elems) |column, lhs_elem| {
-            const f = &switch (op_arg) {
-                .equal => equal,
-                .not_equal => notEqual,
-                .greater_than => greaterThan,
-                .greater_or_equal_than => greaterOrEqualThan,
-                .less_than => lessThan,
-                .less_or_equal_than => lessOrEqualThan,
+            const matrix_elem = switch (op_arg) {
+                .equal,
+                .not_equal,
+                .greater_than,
+                .greater_or_equal_than,
+                .less_than,
+                .less_or_equal_than,
+                => try i.bin(op_arg, lhs_elem, rhs_elem),
                 else => unreachable,
             };
-            const imatrix_elem: *IValue = try .create(i.arena);
-            imatrix_elem.* = try f(i, lhs_elem, rhs_elem);
-            imatrix.set(@intCast(row), @intCast(column), imatrix_elem);
+            matrix.set(@intCast(row), @intCast(column), matrix_elem);
         }
     }
-    return .{ .imatrix = try imatrix.makePointer(i.arena) };
+    return .{ .imatrix = try matrix.makePointer(i.arena) };
 }
 
 fn builtinAggregate(i: *Interpreter, args: []IValue) Error!IValue {
