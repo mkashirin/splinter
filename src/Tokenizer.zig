@@ -160,6 +160,18 @@ pub const Token = struct {
     pub fn keyword(bytes: []const u8) ?Tag {
         return keywords.get(bytes);
     }
+
+    pub fn asCompBinOp(self: @This()) ?@import("ast.zig").BinOp {
+        return switch (self.tag) {
+            .double_equal => .equal,
+            .bang_equal => .not_equal,
+            .greater_than => .greater_than,
+            .greater_or_equal_than => .greater_or_equal_than,
+            .less_than => .less_than,
+            .less_or_equal_than => .less_or_equal_than,
+            else => null,
+        };
+    }
 };
 
 pub const Location = struct { line: usize, column: usize };

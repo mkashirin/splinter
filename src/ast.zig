@@ -214,17 +214,8 @@ pub const Parser = struct {
 
     fn compExpr(self: *Self) !Index {
         var lhs = try self.addSubtrExpr();
-        blk: {
-            const op: BinOp = switch (self.current.tag) {
-                .double_equal => .equal,
-                .bang_equal => .not_equal,
-                .greater_than => .greater_than,
-                .greater_or_equal_than => .greater_or_equal_than,
-                .less_than => .less_than,
-                .less_or_equal_than => .less_or_equal_than,
-
-                else => break :blk,
-            };
+        comp: {
+            const op = self.current.asCompBinOp() orelse break :comp;
             self.step();
 
             const rhs = try self.addSubtrExpr();
@@ -357,18 +348,10 @@ pub const Parser = struct {
         const args_start: Index = @intCast(self.adpb.items.len);
         while (!self.match(.right_paren)) {
             const arg = self.expr() catch op: {
-                const op_arg: BinOp = switch (self.current.tag) {
-                    .double_equal => .equal,
-                    .bang_equal => .not_equal,
-                    .greater_than => .greater_than,
-                    .greater_or_equal_than => .greater_or_equal_than,
-                    .less_than => .less_than,
-                    .less_or_equal_than => .less_or_equal_than,
-
-                    else => return self.fail(.{ .description = "Invalid op-arg" }),
+                const op_arg = self.current.asCompBinOp() orelse {
+                    return self.fail(.{ .description = "Invalid op-arg" });
                 };
                 self.step();
-
                 break :op try self.push(.{ .op_arg = op_arg });
             };
             try self.adpb.append(self.gpa, arg);

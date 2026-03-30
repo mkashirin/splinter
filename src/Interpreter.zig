@@ -62,8 +62,8 @@ pub fn init(arena: Allocator, writer: *std.Io.Writer, tree: ast.Tree) !Interpret
         .{ "Aggregate", builtinAggregate },
     };
     for (builtins) |item| {
-        const name, const ifunc = item;
-        try i.regBuiltin(name, ifunc);
+        const name, const func = item;
+        try i.regBuiltin(name, func);
     }
 
     return i;
@@ -73,8 +73,8 @@ inline fn getNode(i: *Interpreter, index: ast.Index) ast.Node {
     return i.tree.nodes[@intCast(index)];
 }
 
-fn regBuiltin(i: *Interpreter, name: []const u8, ifunc: IFunc) !void {
-    try i.global.put(name, .{ .ifunc = ifunc });
+fn regBuiltin(i: *Interpreter, name: []const u8, func: IFunc) !void {
+    try i.global.put(name, .{ .func = func });
 }
 
 pub fn deinit(i: *Interpreter) void {
@@ -127,9 +127,9 @@ pub const IValue = union(enum) {
     list: *List,
     hash_map: *HashMap,
     none: void,
-    ifunc: IFunc,
+    func: IFunc,
     fn_index: ast.Index,
-    imatrix: *IMatrix,
+    matrix: *IMatrix,
     lazy_index: ast.Index,
     op_arg: ast.BinOp,
     const Self = @This();
@@ -710,7 +710,7 @@ fn call(i: *Interpreter, call_: ast.Call) !IValue {
     }
 
     return switch (callable) {
-        .ifunc => |ifunc| ifunc(i, args),
+        .func => |func| func(i, args),
         .fn_index => |fn_index| i.callFn(fn_index, args),
         .lazy_index => |lazy_index| i.callExpr(.{
             .callable = .{ .expr = lazy_index },
@@ -794,7 +794,7 @@ fn visitc(i: *Interpreter, index: ast.Index, args: CallArgs) !IValue {
 fn callExprIdent(i: *Interpreter, ident: []const u8, args: CallArgs) Error!IValue {
     const value = try i.getVar(ident);
     return switch (value) {
-        .ifunc, .fn_index => i.call(.{
+        .func, .fn_index => i.call(.{
             .callable = .{ .ident = ident },
             .args_start = args.start,
             .args_len = args.len,
@@ -858,7 +858,7 @@ fn builtinPrint(i: *Interpreter, args: []IValue) !IValue {
             .boolean => |boolean| i.uprint("{}", .{boolean}),
             .list => |list| i.uprint("List(len={d})", .{list.elems.len}),
             .hash_map => |hash_map| i.uprint("Map(len={d})", .{hash_map.inner.count()}),
-            .imatrix => |imatrix| i.uprint("IMatrix({d}x{d})", .{ imatrix.rows, imatrix.columns }),
+            .matrix => |imatrix| i.uprint("IMatrix({d}x{d})", .{ imatrix.rows, imatrix.columns }),
             else => i.uprint("IValue: {any}", .{arg}),
         }
         if (j < args.len - 1) i.uprint(" ", .{});
@@ -935,7 +935,7 @@ fn builtinSelect(i: *Interpreter, args: []IValue) !IValue {
             matrix.set(@intCast(row), @intCast(column), matrix_elem);
         }
     }
-    return .{ .imatrix = try matrix.makePointer(i.arena) };
+    return .{ .matrix = try matrix.makePointer(i.arena) };
 }
 
 fn builtinAggregate(i: *Interpreter, args: []IValue) Error!IValue {
@@ -944,7 +944,7 @@ fn builtinAggregate(i: *Interpreter, args: []IValue) Error!IValue {
         return i.fail(_reason, error.BuiltinFailed);
     }
 
-    const selector = args[0].imatrix;
+    const selector = args[0].matrix;
     const in = args[1].list;
     var elems = try i.arena.alloc(IValue, in.elems.len);
     for (0..selector.rows) |row| {
