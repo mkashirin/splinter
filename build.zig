@@ -8,18 +8,13 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
+        .strip = true,
     });
-    const exe_check = b.addExecutable(.{
-        .name = "splinter",
-        .root_module = exe_mod,
-    });
+    const exe_check = b.addExecutable(.{ .name = "splinter", .root_module = exe_mod });
     const check = b.step("check", "Check if Splinter compiles");
 
     check.dependOn(&exe_check.step);
-    const exe = b.addExecutable(.{
-        .name = "splinter",
-        .root_module = exe_mod,
-    });
+    const exe = b.addExecutable(.{ .name = "splinter", .root_module = exe_mod });
     b.installArtifact(exe);
 
     const run_cmd = b.addRunArtifact(exe);
@@ -39,8 +34,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    const renderer_unit_tests =
-        b.addTest(.{ .root_module = renderer_root_module });
+    const renderer_unit_tests = b.addTest(.{ .root_module = renderer_root_module });
     const run_renderer_unit_testes = b.addRunArtifact(renderer_unit_tests);
     test_step.dependOn(&run_renderer_unit_testes.step);
 }

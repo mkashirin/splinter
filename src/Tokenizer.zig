@@ -100,25 +100,25 @@ pub const Token = struct {
 
     pub const Tag = enum(u8) {
         // zig fmt: off
-        plus    = '+',
-        minus   = '-',
-        star    = '*',
-        slash   = '/',
-        carrot  = '^',
+        plus   = '+',
+        minus  = '-',
+        star   = '*',
+        slash  = '/',
+        carrot = '^',
 
-        left_paren      = '(',
-        right_paren     = ')',
-        left_bracket    = '[',
-        right_bracket   = ']',
-        left_brace      = '{',
-        right_brace     = '}',
-        comma           = ',',
-        semicolon       = ';',
-        colon           = ':',
+        left_paren    = '(',
+        right_paren   = ')',
+        left_bracket  = '[',
+        right_bracket = ']',
+        left_brace    = '{',
+        right_brace   = '}',
+        comma         = ',',
+        semicolon     = ';',
+        colon         = ':',
 
-        equal           = '=',
-        less_than       = '<',
-        greater_than    = '>',
+        equal        = '=',
+        less_than    = '<',
+        greater_than = '>',
         // zig fmt: on
 
         double_equal,
@@ -145,23 +145,25 @@ pub const Token = struct {
     };
 
     pub const keywords: std.StaticStringMap(Tag) = .initComptime(.{
-        .{ "true", .keyword_true },
-        .{ "false", .keyword_false },
-        .{ "if", .keyword_if },
-        .{ "else", .keyword_else },
-        .{ "in", .keyword_in },
-        .{ "and", .keyword_and },
-        .{ "or", .keyword_or },
-        .{ "def", .keyword_def },
+        // zig fmt: off
+        .{ "true",   .keyword_true },
+        .{ "false",  .keyword_false },
+        .{ "if",     .keyword_if },
+        .{ "else",   .keyword_else },
+        .{ "in",     .keyword_in },
+        .{ "and",    .keyword_and },
+        .{ "or",     .keyword_or },
+        .{ "def",    .keyword_def },
         .{ "return", .keyword_return },
-        .{ "for", .keyword_for },
+        .{ "for",    .keyword_for },
+        // zig fmt: on
     });
 
     pub fn keyword(bytes: []const u8) ?Tag {
         return keywords.get(bytes);
     }
 
-    pub fn asCompBinOp(self: @This()) ?@import("ast.zig").BinOp {
+    pub inline fn asCompBinOp(self: @This()) ?@import("ast.zig").BinOp {
         return switch (self.tag) {
             .double_equal => .equal,
             .bang_equal => .not_equal,

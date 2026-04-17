@@ -580,6 +580,19 @@ pub const BinOp = enum {
     logic_and,
     logic_or,
     is_in,
+
+    pub inline fn isComp(self: @This()) bool {
+        return switch (self) {
+            .equal,
+            .not_equal,
+            .greater_than,
+            .greater_or_equal_than,
+            .less_than,
+            .less_or_equal_than,
+            => true,
+            else => false,
+        };
+    }
 };
 
 pub const Call = struct {

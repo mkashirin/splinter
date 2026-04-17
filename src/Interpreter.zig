@@ -18,15 +18,28 @@ const Interpreter = @This();
 const Table = std.StringHashMap(IValue);
 
 pub fn getVar(i: *Interpreter, name: []const u8) !IValue {
+    // var it = i.global.keyIterator();
+    // while (it.next()) |key| std.debug.print("Entry {s}\n", .{key.*});
     if (i.local.get(name)) |value| {
         return value;
     } else if (i.global.get(name)) |value| {
         return value;
-    } else return i.fail("No definition found", error.UndefinedSymbol);
+    } else {
+        var _reason: [48]u8 = undefined;
+        var writer = std.Io.Writer.fixed(&_reason);
+        _ = writer.print("No definition found for symbol '{s}'", .{name}) catch unreachable;
+        return i.fail(&_reason, error.UndefinedSymbol);
+    }
 }
 
-pub fn setVar(i: *Interpreter, name: []const u8, value: IValue) !void {
-    const entry = try i.local.getOrPut(name);
+pub fn setVar(
+    i: *Interpreter,
+    table: enum { global, local },
+    name: []const u8,
+    value: IValue,
+) !void {
+    var table_ = if (table == .global) &i.global else &i.local;
+    const entry = try table_.getOrPut(name);
     if (entry.found_existing) {
         var value_ = entry.value_ptr.*;
         value_.clear();
@@ -133,9 +146,15 @@ pub const IValue = union(enum) {
     lazy_index: ast.Index,
     op_arg: ast.BinOp,
     const Self = @This();
+    const Tag = meta.Tag(Self);
 
-    pub inline fn is(self: Self, tag: meta.Tag(Self)) bool {
+    pub inline fn is(self: Self, tag: Tag) bool {
         return self == tag;
+    }
+
+    pub inline fn isOneOf(self: Self, tags: []const Tag) bool {
+        for (tags) |tag| if (self == tag) return true;
+        return false;
     }
 
     pub fn clearAndDestroy(self: *Self, gpa: Allocator) void {
@@ -151,7 +170,7 @@ pub const IValue = union(enum) {
         return switch (self) {
             .string => |string| string.len,
             .list => |list| list.elems.len,
-            .hash_map => |hash_map| hash_map.inner.capacity(),
+            .hash_map => |hash_map| hash_map.inner.count(),
             else => null,
         };
     }
@@ -273,23 +292,23 @@ fn deepEqual(lhs: IValue, rhs: IValue) bool {
         .int => |int| int == rhs.int,
         .boolean => |boolean| boolean == rhs.boolean,
         .string => |string| std.mem.eql(u8, string, rhs.string),
-        .list => |list| ret: {
-            if (list.elems.len != rhs.list.elems.len) break :ret false;
+        .list => |list| eq: {
+            if (list.elems.len != rhs.list.elems.len) break :eq false;
             for (list.elems, rhs.list.elems) |elem, rhs_elem| {
-                if (!deepEqual(elem, rhs_elem)) break :ret false;
+                if (!deepEqual(elem, rhs_elem)) break :eq false;
             }
-            break :ret true;
+            break :eq true;
         },
-        .hash_map => |hash_map| ret: {
+        .hash_map => |hash_map| eq: {
             if (hash_map.inner.count() != rhs.hash_map.inner.count()) return false;
             var it = hash_map.inner.iterator();
             var rhs_it = rhs.hash_map.inner.iterator();
             while (it.next()) |pair| {
                 const rhs_pair = rhs_it.next().?;
                 const pair_key, const rhs_pair_key = .{ pair.key_ptr.*, rhs_pair.key_ptr.* };
-                if (!deepEqual(pair_key, rhs_pair_key)) break :ret false;
+                if (!deepEqual(pair_key, rhs_pair_key)) break :eq false;
             }
-            break :ret true;
+            break :eq true;
         },
         else => unreachable,
     };
@@ -387,13 +406,13 @@ fn listComp(i: *Interpreter, list_comp: ast.ListComp) !*List {
         .string => |string| {
             for (0.., string) |j, char| {
                 const buf = [1]u8{char};
-                try i.setVar(variable, .{ .string = &buf });
+                try i.setVar(.local, variable, .{ .string = &buf });
                 elems[j] = try i.visit(list_comp.expr);
             }
         },
         .list => |list| {
             for (0.., list.elems) |j, elem| {
-                try i.setVar(variable, elem);
+                try i.setVar(.local, variable, elem);
                 elems[j] = try i.visit(list_comp.expr);
             }
         },
@@ -401,7 +420,7 @@ fn listComp(i: *Interpreter, list_comp: ast.ListComp) !*List {
             var it = hash_map.inner.keyIterator();
             var j: usize = 0;
             while (it.next()) |key_ptr| : (j += 1) {
-                try i.setVar(variable, key_ptr.*);
+                try i.setVar(.local, variable, key_ptr.*);
                 elems[j] = try i.visit(list_comp.expr);
             }
         },
@@ -459,13 +478,20 @@ fn add(i: *Interpreter, lhs: IValue, rhs: IValue) !IValue {
     return switch (lhs) {
         .int => .{ .int = lhs.int + rhs.int },
         .string => .{ .string = try std.mem.concat(i.arena, u8, &.{ lhs.string, rhs.string }) },
-        .list => list: {
-            const list_: List = .{ .elems = try std.mem.concat(
-                i.arena,
-                IValue,
-                &.{ lhs.list.elems, rhs.list.elems },
-            ) };
-            break :list .{ .list = try list_.makePointer(i.arena) };
+        .list => list: switch (rhs) {
+            .int, .string => {
+                for (0.., lhs.list.elems) |j, elem| lhs.list.elems[j] = try i.add(elem, rhs);
+                break :list lhs;
+            },
+            .list => {
+                const list_: List = .{ .elems = try std.mem.concat(
+                    i.arena,
+                    IValue,
+                    &.{ lhs.list.elems, rhs.list.elems },
+                ) };
+                break :list .{ .list = try list_.makePointer(i.arena) };
+            },
+            else => i.fail("Values could not be broadcasted for the list", error.TypeError),
         },
         else => i.fail("Invalid type for addition operation", error.TypeError),
     };
@@ -474,6 +500,20 @@ fn add(i: *Interpreter, lhs: IValue, rhs: IValue) !IValue {
 fn subtr(i: *Interpreter, lhs: IValue, rhs: IValue) !IValue {
     return switch (lhs) {
         .int => .{ .int = lhs.int - rhs.int },
+        .list => |list| switch (rhs) {
+            .int => {
+                for (0.., list.elems) |j, elem| list.elems[j] = try i.subtr(elem, rhs);
+                return lhs;
+            },
+            .list => {
+                const len = lhs.len().?;
+                const elems = try i.arena.alloc(IValue, len);
+                for (0..len) |j| elems[j] = try i.subtr(list.elems[j], rhs.list.elems[j]);
+                const list_: List = .{ .elems = elems };
+                return .{ .list = try list_.makePointer(i.arena) };
+            },
+            else => return i.fail("Values could not be broadcasted for the list", error.TypeError),
+        },
         else => i.fail("Invalid type for subtraction operation", error.TypeError),
     };
 }
@@ -496,11 +536,21 @@ fn mult(i: *Interpreter, lhs: IValue, rhs: IValue) !IValue {
                 @memcpy(buf[start .. start + string.len], string);
             }
             return .{ .string = buf };
-        } else return i.fail("Cannot multiply string by non-integer", error.TypeError),
-        .list => |list| if (rhs.is(.int)) {
-            for (0.., list.elems) |j, elem| list.elems[j] = try i.mult(elem, rhs);
-            return lhs;
-        } else return i.fail("Cannot multiply list by non-int", error.TypeError),
+        } else return i.fail("Values could not be broadcasted for the string", error.TypeError),
+        .list => |list| switch (rhs) {
+            .int => {
+                for (0.., list.elems) |j, elem| list.elems[j] = try i.mult(elem, rhs);
+                return lhs;
+            },
+            .list => {
+                const len = lhs.len().?;
+                const elems = try i.arena.alloc(IValue, len);
+                for (0..len) |j| elems[j] = try i.mult(list.elems[j], rhs.list.elems[j]);
+                const list_: List = .{ .elems = elems };
+                return .{ .list = try list_.makePointer(i.arena) };
+            },
+            else => return i.fail("Values could not be broadcasted for the list", error.TypeError),
+        },
         else => return i.fail("Invalid type for multiplication", error.TypeError),
     }
 }
@@ -597,9 +647,7 @@ inline fn isTruthy(value: IValue) bool {
     return switch (value) {
         .int => |int| int != 0,
         .boolean => |boolean| boolean,
-        .string => |string| string.len > 0,
-        .list => |list| list.elems.len > 0,
-        .hash_map => |hash_map| hash_map.inner.count() > 0,
+        .string, .list, .hash_map => value.len().? > 0,
         else => unreachable,
     };
 }
@@ -614,10 +662,10 @@ fn indexExpr(i: *Interpreter, index_expr: ast.IndexExpr) !IValue {
     // TODO: Support indexing into IMatrix.
     return switch (target) {
         .hash_map => |hash_map| hash_map.get(index) orelse .none,
-        .list => |list| ret: {
-            if (index.int >= list.elems.len)
-                break :ret i.fail("List index out of bounds", null);
-            break :ret list.get(@intCast(index.int));
+        .list => |list| list_: {
+            if (index.int >= target.len().?)
+                break :list_ i.fail("List index out of bounds", null);
+            break :list_ list.get(@intCast(index.int));
         },
         else => i.fail("Could not index into the type", null),
     };
@@ -628,12 +676,12 @@ fn assignStmt(i: *Interpreter, assign_stmt: ast.AssignStmt) !IValue {
         error.TypeError => .{ .lazy_index = assign_stmt.value },
         else => return err,
     };
-    try i.setVar(assign_stmt.name, value);
+    try i.setVar(.global, assign_stmt.name, value);
     return value;
 }
 
-fn fnDef(i: *Interpreter, index: ast.Index, fn_def: ast.FnDef) !IValue {
-    try i.setVar(fn_def.name, .{ .fn_index = index });
+fn fnDef(i: *Interpreter, fn_index: ast.Index, fn_def: ast.FnDef) !IValue {
+    try i.setVar(.global, fn_def.name, .{ .fn_index = fn_index });
     return .none;
 }
 
@@ -650,24 +698,24 @@ fn forStmt(i: *Interpreter, for_stmt: ast.ForStmt) !IValue {
     switch (iter) {
         .list => |list| {
             for (list.elems) |elem| {
-                try i.setVar(variable, elem);
+                try i.setVar(.local, variable, elem);
                 _ = try i.block(start, len);
-                try i.setVar(variable, .none);
+                try i.setVar(.local, variable, .none);
             }
         },
         .string => |string| {
             for (0..string.len) |j| {
-                try i.setVar(variable, .{ .string = string[j .. j + 1] });
+                try i.setVar(.local, variable, .{ .string = string[j .. j + 1] });
                 _ = try i.block(start, len);
-                try i.setVar(variable, .none);
+                try i.setVar(.local, variable, .none);
             }
         },
         .hash_map => |hash_map| {
             var it = hash_map.inner.keyIterator();
             while (it.next()) |key_ptr| {
-                try i.setVar(variable, key_ptr.*);
+                try i.setVar(.local, variable, key_ptr.*);
                 _ = try i.block(start, len);
-                try i.setVar(variable, .none);
+                try i.setVar(.local, variable, .none);
             }
         },
         else => return i.fail("IValue is not iterable", null),
@@ -736,9 +784,10 @@ fn callExpr(i: *Interpreter, expr_call: ast.Call) Error!IValue {
 }
 
 fn callBinExpr(i: *Interpreter, bin_expr: ast.BinExpr, args: CallArgs) !IValue {
-    const lhs = try i.visitc(bin_expr.lhs, args);
-    const rhs = try i.visitc(bin_expr.rhs, args);
-    if ((lhs.is(.int) or lhs.is(.string) or lhs.is(.boolean)) and rhs.is(.list)) {
+    const lhs = try i.cvisit(bin_expr.lhs, args);
+    const lhs_allowed = [_]IValue.Tag{ .int, .string, .boolean };
+    const rhs = try i.cvisit(bin_expr.rhs, args);
+    if (lhs.isOneOf(&lhs_allowed) and rhs.is(.list)) {
         return i.callBinExpr(.{
             .lhs = bin_expr.rhs,
             .op = bin_expr.op,
@@ -746,37 +795,28 @@ fn callBinExpr(i: *Interpreter, bin_expr: ast.BinExpr, args: CallArgs) !IValue {
         }, args);
     }
 
-    if (lhs.is(.list)) switch (bin_expr.op) {
-        .equal,
-        .not_equal,
-        .greater_than,
-        .greater_or_equal_than,
-        .less_than,
-        .less_or_equal_than,
-        => {
-            const len = lhs.len().?;
-            const elems = try i.arena.alloc(IValue, len);
-            for (0..len) |j| {
-                const res = try i.bin(bin_expr.op, lhs.list.elems[j], rhs);
-                elems[j] = res;
-            }
-            const list: List = .{ .elems = elems };
-            return .{ .list = try list.makePointer(i.arena) };
-        },
-        else => return i.fail("Invalid binary operation inside of a callable expression", null),
+    if (lhs.is(.list) and bin_expr.op.isComp()) {
+        const len = lhs.len().?;
+        const elems = try i.arena.alloc(IValue, len);
+        for (0..len) |j| {
+            const res = try i.bin(bin_expr.op, lhs.list.elems[j], rhs);
+            elems[j] = res;
+        }
+        const list: List = .{ .elems = elems };
+        return .{ .list = try list.makePointer(i.arena) };
     } else return i.bin(bin_expr.op, lhs, rhs);
 }
 
 fn callCondExpr(i: *Interpreter, cond_expr: ast.CondExpr, args: CallArgs) !IValue {
-    const if_cond = try i.visitc(cond_expr.if_cond, args);
+    const if_cond = try i.cvisit(cond_expr.if_cond, args);
     if (isTruthy(if_cond)) {
-        return i.visitc(cond_expr.then, args);
+        return i.cvisit(cond_expr.then, args);
     } else {
-        return i.visitc(cond_expr.else_expr, args);
+        return i.cvisit(cond_expr.else_expr, args);
     }
 }
 
-fn visitc(i: *Interpreter, index: ast.Index, args: CallArgs) !IValue {
+fn cvisit(i: *Interpreter, index: ast.Index, args: CallArgs) !IValue {
     const node = i.getNode(index);
     if (node.is(.ident)) {
         return i.callExprIdent(node.ident, args);
@@ -828,22 +868,15 @@ fn callFn(i: *Interpreter, fn_index: ast.Index, args: []IValue) !IValue {
     for (0..fn_def.args_len) |offset| {
         const param_node_index = i.tree.adpb[fn_def.args_start + offset];
         const param_name = i.tree.nodes[param_node_index].ident;
-        try i.setVar(param_name, args[offset]);
+        try i.setVar(.local, param_name, args[offset]);
     }
     return i.block(fn_def.body_start, fn_def.body_len);
 }
 
 fn opArg(i: *Interpreter, bin_op: ast.BinOp) !IValue {
-    return switch (bin_op) {
-        .equal,
-        .not_equal,
-        .greater_than,
-        .greater_or_equal_than,
-        .less_than,
-        .less_or_equal_than,
-        => .{ .op_arg = bin_op },
-        else => i.fail("Invalid operational argument", null),
-    };
+    if (bin_op.isComp()) return .{ .op_arg = bin_op } else {
+        return i.fail("Invalid operational argument", null);
+    }
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -878,7 +911,7 @@ fn builtinTokens(i: *Interpreter, args: []IValue) !IValue {
     }
 
     const string: []const u8 = args[0].string;
-    const elems = try i.arena.alloc(IValue, string.len);
+    const elems = try i.arena.alloc(IValue, args[0].len().?);
     for (0.., string) |j, char| elems[j] = .{ .string = try i.arena.dupe(u8, &[1]u8{char}) };
     const list: List = .{ .elems = elems };
     return .{ .list = try list.makePointer(i.arena) };
@@ -903,9 +936,11 @@ fn builtinIndices(i: *Interpreter, args: []IValue) !IValue {
         return i.fail("Expected only 1 string as an argument", error.BuiltinFailed);
     }
 
-    const string: []const u8 = args[0].string;
-    const elems = try i.arena.alloc(IValue, string.len);
-    for (0..string.len) |j| elems[j] = .{ .int = @intCast(j) };
+    const len = args[0].len() orelse {
+        return i.fail("Invalid input type for `Indices(...)`", error.BuiltinFailed);
+    };
+    const elems = try i.arena.alloc(IValue, len);
+    for (0..len) |j| elems[j] = .{ .int = @intCast(j) };
     const list: List = .{ .elems = elems };
     return .{ .list = try list.makePointer(i.arena) };
 }
@@ -922,15 +957,8 @@ fn builtinSelect(i: *Interpreter, args: []IValue) !IValue {
 
     for (0.., rhs.elems) |row, rhs_elem| {
         for (0.., lhs.elems) |column, lhs_elem| {
-            const matrix_elem = switch (op_arg) {
-                .equal,
-                .not_equal,
-                .greater_than,
-                .greater_or_equal_than,
-                .less_than,
-                .less_or_equal_than,
-                => try i.bin(op_arg, lhs_elem, rhs_elem),
-                else => unreachable,
+            const matrix_elem = if (op_arg.isComp()) try i.bin(op_arg, lhs_elem, rhs_elem) else {
+                unreachable;
             };
             matrix.set(@intCast(row), @intCast(column), matrix_elem);
         }
