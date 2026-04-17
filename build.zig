@@ -2,13 +2,15 @@ const std = @import("std");
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
-    const optimize = b.standardOptimizeOption(.{});
+    const optimize = b.standardOptimizeOption(.{ .preferred_optimize_mode = .ReleaseSmall });
 
     const exe_mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
+        .error_tracing = false,
         .strip = true,
+        .single_threaded = true,
     });
     const exe_check = b.addExecutable(.{ .name = "splinter", .root_module = exe_mod });
     const check = b.step("check", "Check if Splinter compiles");

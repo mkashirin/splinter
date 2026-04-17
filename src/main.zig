@@ -2,6 +2,8 @@
 
 const std = @import("std");
 const heap = std.heap;
+const Allocator = std.mem.Allocator;
+const Io = std.Io;
 
 const Tokenizer = @import("Tokenizer.zig");
 const ast = @import("ast.zig");
@@ -11,18 +13,27 @@ const Interpreter = @import("Interpreter.zig");
 pub fn main(init: std.process.Init) !void {
     var arena: heap.ArenaAllocator = .init(heap.page_allocator);
     defer arena.deinit();
-    const gpa = arena.allocator();
+    const arena_ = arena.allocator();
 
-    var writer = std.Io.File.stderr().writer(init.io, &.{});
+    var writer = Io.File.stderr().writer(init.io, &.{});
     const stderr = &writer.interface;
+    var args = try init.minimal.args.iterateAllocator(arena_);
+    _ = args.next();
 
-    var file = try std.Io.Dir.openFile(.cwd(), init.io, "main.l", .{});
+    var file = try Io.Dir.openFile(.cwd(), init.io, args.next().?, .{});
     defer file.close(init.io);
     var source: [1024]u8 = undefined;
     const read = try file.readPositionalAll(init.io, &source, 0);
 
-    var tokenizer: Tokenizer = .init(source[0..read]);
-    var parser: ast.Parser = try .init(&tokenizer, gpa);
+    const render_ast = args.next();
+    const render_ast_ = if (render_ast != null and
+        std.mem.eql(u8, render_ast.?, "--render-ast")) true else false;
+    return run(arena_, source[0..read], stderr, render_ast_);
+}
+
+fn run(arena: std.mem.Allocator, source: []const u8, stderr: *Io.Writer, render_ast: bool) !void {
+    var tokenizer: Tokenizer = .init(source);
+    var parser: ast.Parser = try .init(&tokenizer, arena);
     const tree = parser.buildTree() catch |err| {
         const diagnostic = parser.diagnostic.?;
         try stderr.print(
@@ -32,23 +43,19 @@ pub fn main(init: std.process.Init) !void {
         return err;
     };
 
-    var renderer: Renderer = .init(stderr, tree.nodes, tree.adpb);
-    try stderr.print("Parsed AST (index-backed):\n", .{});
-    for (tree.indices) |node| try renderer.render(node);
+    if (render_ast) {
+        var renderer: Renderer = .init(stderr, tree.nodes, tree.adpb);
+        try stderr.print("Parsed AST (index-backed):\n", .{});
+        for (tree.indices) |node| try renderer.render(node);
+        try stderr.print("\n", .{});
+    }
 
-    var interpreter: Interpreter = try .init(gpa, stderr, tree);
+    var interpreter: Interpreter = try .init(arena, stderr, tree);
     defer interpreter.deinit();
     const ivalue = interpreter.walkTree() catch |err| {
         const diagnostic = interpreter.diagnostic.?;
         try stderr.print("Error at line {d}: {s}\n", .{ diagnostic.at, diagnostic.description });
         return err;
     };
-    try stderr.print("{any}\n", .{ivalue});
-
-    // for (0..ivalue.imatrix.rows) |row| {
-    //     for (0..ivalue.imatrix.columns) |column| {
-    //         const elem = ivalue.imatrix.get(@intCast(row), @intCast(column));
-    //         std.debug.print("({d}, {d}): {}\n", .{ row, column, elem.boolean });
-    //     }
-    // }
+    try stderr.print("Last IValue returned: {any}\n", .{ivalue});
 }

@@ -1,10 +1,10 @@
 def f(bools) {
     indices = Indices(bools);
-    diagonal_mat = Select(indices, indices, <=);
+    diag_mat = Select(indices, indices, <=);
     plus_one = (Indices + 1)(bools);
     indicated = Indicator(bools);
-    a = plus_one * Aggregate(diagonal_matrix, plus_one);
-    return a;
+    result = plus_one * Aggregate(diag_mat, plus_one);
+    return result;
 }
 
 input = "(())()";
@@ -15,6 +15,6 @@ opens = f(num_open);
 closed = f(num_closed);
 balance = opens - closed;
 
-for e in closed {
+for e in balance {
     Print(e);
 }

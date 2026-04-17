@@ -897,6 +897,12 @@ fn builtinPrint(i: *Interpreter, args: []IValue) !IValue {
         if (j < args.len - 1) i.uprint(" ", .{});
     }
     i.uprint("\n", .{});
+    // for (0..ivalue.imatrix.rows) |row| {
+    //     for (0..ivalue.imatrix.columns) |column| {
+    //         const elem = ivalue.imatrix.get(@intCast(row), @intCast(column));
+    //         std.debug.print("({d}, {d}): {}\n", .{ row, column, elem.boolean });
+    //     }
+    // }
     return .none;
 }
 
