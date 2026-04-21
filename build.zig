@@ -39,4 +39,13 @@ pub fn build(b: *std.Build) void {
     const renderer_unit_tests = b.addTest(.{ .root_module = renderer_root_module });
     const run_renderer_unit_testes = b.addRunArtifact(renderer_unit_tests);
     test_step.dependOn(&run_renderer_unit_testes.step);
+
+    const interpreter_root_module = b.createModule(.{
+        .root_source_file = b.path("src/Interpreter.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const interpreter_unit_tests = b.addTest(.{ .root_module = interpreter_root_module });
+    const run_interpreter_unit_testes = b.addRunArtifact(interpreter_unit_tests);
+    test_step.dependOn(&run_interpreter_unit_testes.step);
 }

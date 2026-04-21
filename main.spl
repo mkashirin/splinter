@@ -3,18 +3,24 @@ def f(bools) {
     diag_mat = Select(indices, indices, <=);
     plus_one = (Indices + 1)(bools);
     indicated = Indicator(bools);
-    result = plus_one * Aggregate(diag_mat, plus_one);
-    return result;
+    agg = plus_one * Aggregate(diag_mat, indicated);
+    return agg;
 }
 
-input = "(())()";
+INPUT = "(())";
 
-num_open = (Tokens == "(")(input);
-num_closed = (Tokens == ")")(input);
+num_open = (Tokens == "(")(INPUT);
+num_closed = (Tokens == ")")(INPUT);
 opens = f(num_open);
 closed = f(num_closed);
-balance = opens - closed;
 
-for e in balance {
-    Print(e);
+balance = opens - closed;
+imbalances = [true if e < 0 else false for e in balance];
+f_imbalances = f(imbalances);
+
+pt = ["T" if e == 0 else "P" for e in balance];
+indices = Indices(pt);
+for i in indices {
+    ptf = "F" if f_imbalances[i] > 0 else pt[i];
+    Print(ptf);
 }

@@ -16,8 +16,15 @@ pub const Parser = struct {
         found: Tag,
 
         pub const Expected = union(enum) {
-            tag: Tag,
             description: []const u8,
+            tag: Tag,
+
+            pub fn repr(self: @This()) []const u8 {
+                return switch (self) {
+                    .description => |string| string,
+                    .tag => |tag_| @tagName(tag_),
+                };
+            }
         };
     };
 
@@ -76,7 +83,7 @@ pub const Parser = struct {
                 self.step();
                 return variable;
             },
-            else => return self.fail(.{ .description = "expression" }),
+            else => return self.fail(.{ .description = "Failed to parse with `assignStmt(...)`" }),
         }
     }
 
@@ -243,7 +250,7 @@ pub const Parser = struct {
     }
 
     fn multDivPowExpr(self: *Self) !Index {
-        var lhs = try self.primaryExpr();
+        var lhs = try self.primExpr();
         blk: {
             const op: BinOp = switch (self.current.tag) {
                 .star => .mult,
@@ -260,17 +267,17 @@ pub const Parser = struct {
         return lhs;
     }
 
-    fn primaryExpr(self: *Self) !Index {
+    fn primExpr(self: *Self) !Index {
         var primary: Index = try switch (self.current.tag) {
             .ident => self.nameExpr(),
+            .float_literal => self.floatLiteral(),
             .int_literal => self.intLiteral(),
             .string_literal => self.stringLiteral(),
             .left_brace => self.hashMapLiteral(),
             .left_bracket => self.listLiteral(),
             .left_paren => self.boxedExpr(),
-
             .keyword_true, .keyword_false => self.booleanLiteral(),
-            else => self.fail(.{ .description = "expression" }),
+            else => self.fail(.{ .description = "Failed to parse with `primExpr(...)`" }),
         };
         primary = try self.indexExpr(primary);
         return primary;
@@ -365,8 +372,15 @@ pub const Parser = struct {
         return .{ args_start, args_len };
     }
 
+    fn floatLiteral(self: *Self) !Index {
+        const float = try fmt.parseFloat(f64, self.current.lexeme.?);
+        const index = try self.push(.{ .float = float });
+        self.step();
+        return index;
+    }
+
     fn intLiteral(self: *Self) !Index {
-        const int = try fmt.parseInt(i64, self.current.lexeme.?, 10);
+        const int = try fmt.parseInt(i32, self.current.lexeme.?, 10);
         const index = try self.push(.{ .int = int });
         self.step();
         return index;
@@ -391,7 +405,12 @@ pub const Parser = struct {
 
     fn listLiteral(self: *Self) !Index {
         self.step();
+        if (self.match(.right_bracket)) {
+            self.step();
+            return self.push(.{ .list = .empty });
+        }
         const expr_ = try self.expr();
+        // std.debug.print("expr: {any}", .{self.nodes.items[@intCast(expr_)]});
         if (!self.match(.keyword_for)) {
             var elems = IndicesList.empty;
             errdefer elems.deinit(self.gpa);
@@ -425,6 +444,10 @@ pub const Parser = struct {
 
     fn hashMapLiteral(self: *Self) !Index {
         self.step();
+        if (self.match(.right_brace)) {
+            self.step();
+            return self.push(.{ .hash_map = .empty });
+        }
         var keys, var values = .{ IndicesList.empty, IndicesList.empty };
         errdefer {
             keys.deinit(self.gpa);
@@ -536,7 +559,8 @@ pub const Tree = struct {
 };
 
 pub const Node = union(enum) {
-    int: i64,
+    int: i32,
+    float: f64,
     string: []const u8,
     boolean: bool,
     ident: []const u8,
@@ -624,6 +648,7 @@ pub const ForStmt = struct {
 pub const List = struct {
     elems: []const Index,
     const Self = @This();
+    pub const empty: Self = .{ .elems = &.{} };
 
     pub fn init(gpa: Allocator, elems: *IndicesList) !Self {
         return .{ .elems = try elems.toOwnedSlice(gpa) };
@@ -640,6 +665,7 @@ pub const HashMap = struct {
     keys: []const Index,
     values: []const Index,
     const Self = @This();
+    pub const empty: Self = .{ .keys = &.{}, .values = &.{} };
 
     pub fn init(gpa: Allocator, keys: *IndicesList, values: *IndicesList) !Self {
         return .{

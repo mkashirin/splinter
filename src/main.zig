@@ -17,7 +17,7 @@ pub fn main(init: std.process.Init) !void {
 
     var writer = Io.File.stderr().writer(init.io, &.{});
     const stderr = &writer.interface;
-    var args = try init.minimal.args.iterateAllocator(arena_);
+    var args = init.minimal.args.iterate();
     _ = args.next();
 
     var file = try Io.Dir.openFile(.cwd(), init.io, args.next().?, .{});
@@ -25,28 +25,27 @@ pub fn main(init: std.process.Init) !void {
     var source: [1024]u8 = undefined;
     const read = try file.readPositionalAll(init.io, &source, 0);
 
-    const render_ast = args.next();
-    const render_ast_ = if (render_ast != null and
-        std.mem.eql(u8, render_ast.?, "--render-ast")) true else false;
-    return run(arena_, source[0..read], stderr, render_ast_);
+    const show_ast = args.next();
+    const show_ast_ = if (show_ast != null and std.mem.eql(u8, show_ast.?, "-a")) true else false;
+    return run(arena_, source[0..read], stderr, show_ast_);
 }
 
-fn run(arena: std.mem.Allocator, source: []const u8, stderr: *Io.Writer, render_ast: bool) !void {
-    var tokenizer: Tokenizer = .init(source);
+fn run(arena: std.mem.Allocator, source: []const u8, stderr: *Io.Writer, show_ast: bool) !void {
+    var tokenizer: Tokenizer = .fromSource(source);
     var parser: ast.Parser = try .init(&tokenizer, arena);
     const tree = parser.buildTree() catch |err| {
         const diagnostic = parser.diagnostic.?;
         try stderr.print(
-            "Error at line {d}, column {d}: {any}\n",
-            .{ diagnostic.at.line, diagnostic.at.column, diagnostic.expected },
+            "Error at line {d}, column {d}: {s}\n",
+            .{ diagnostic.at.line, diagnostic.at.column, diagnostic.expected.repr() },
         );
         return err;
     };
 
-    if (render_ast) {
+    if (show_ast) {
         var renderer: Renderer = .init(stderr, tree.nodes, tree.adpb);
         try stderr.print("Parsed AST (index-backed):\n", .{});
-        for (tree.indices) |node| try renderer.render(node);
+        for (tree.indices) |node| renderer.render(node);
         try stderr.print("\n", .{});
     }
 

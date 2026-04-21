@@ -4,12 +4,8 @@ line: usize,
 column: usize,
 const Tokenizer = @This();
 
-pub fn init(source: []const u8) Tokenizer {
+pub fn fromSource(source: []const u8) Tokenizer {
     return .{ .source = source, .index = 0, .line = 1, .column = 1 };
-}
-
-pub fn deinit(t: *Tokenizer) void {
-    t.* = undefined;
 }
 
 pub fn peek(t: *Tokenizer) Token {
@@ -51,14 +47,27 @@ pub fn next(t: *Tokenizer) Token {
 
         '0'...'9' => {
             while (t.index < t.source.len) {
-                const digit = t.source[t.index];
-                switch (digit) {
+                switch (t.source[t.index]) {
                     '0'...'9' => t.step(),
                     else => break,
                 }
             }
+
+            var is_float = false;
+            if (t.index + 1 < t.source.len and t.match('.') and isDigit(t.source[t.index + 1])) {
+                is_float = true;
+                t.step();
+
+                while (t.index < t.source.len) {
+                    switch (t.source[t.index]) {
+                        '0'...'9' => t.step(),
+                        else => break,
+                    }
+                }
+            }
+
             token.lexeme = t.source[start..t.index];
-            break :tag .int_literal;
+            break :tag if (is_float) .float_literal else .int_literal;
         },
 
         '"' => {
@@ -131,6 +140,7 @@ pub const Token = struct {
         ident,
         string_literal,
         int_literal,
+        float_literal,
 
         keyword_true,
         keyword_false,
@@ -203,3 +213,4 @@ test {
 }
 
 const std = @import("std");
+const isDigit = std.ascii.isDigit;

@@ -134,7 +134,8 @@ fn fail(i: *Interpreter, reason: []const u8, err: ?Error) Error {
 // ------------------------------------------------------------------------------------------------
 
 pub const IValue = union(enum) {
-    int: i64,
+    float: f64,
+    int: i32,
     string: []const u8,
     boolean: bool,
     list: *List,
@@ -148,15 +149,6 @@ pub const IValue = union(enum) {
     const Self = @This();
     const Tag = meta.Tag(Self);
 
-    pub inline fn is(self: Self, tag: Tag) bool {
-        return self == tag;
-    }
-
-    pub inline fn isOneOf(self: Self, tags: []const Tag) bool {
-        for (tags) |tag| if (self == tag) return true;
-        return false;
-    }
-
     pub fn clearAndDestroy(self: *Self, gpa: Allocator) void {
         self.clear();
         gpa.destroy(self);
@@ -164,6 +156,69 @@ pub const IValue = union(enum) {
 
     pub inline fn clear(self: *Self) void {
         self.* = .none;
+    }
+
+    pub inline fn tag(self: Self) Tag {
+        return meta.activeTag(self);
+    }
+
+    pub inline fn is(self: Self, tag_: Tag) bool {
+        return self == tag_;
+    }
+
+    pub inline fn isOneOf(self: Self, tags: []const Tag) bool {
+        for (tags) |tag_| if (self == tag_) return true;
+        return false;
+    }
+
+    fn _iprint(w: *std.Io.Writer, comptime format: []const u8, args: anytype) void {
+        w.print(format, args) catch unreachable;
+    }
+
+    pub fn repr(self: Self, w: *std.Io.Writer) !void {
+        switch (self) {
+            .float => |float| _iprint(w, "Float({d})", .{float}),
+            .int => |int| _iprint(w, "Int({d})", .{int}),
+            .string => |string| _iprint(w, "String({s})", .{string}),
+            .boolean => |boolean| _iprint(w, "Boolean({})", .{boolean}),
+            .list => |list| {
+                _iprint(w, "List([", .{});
+                const num_elems = self.len().?;
+                for (0..num_elems) |i| {
+                    try list.get(@intCast(i)).repr(w);
+                    if (i < num_elems - 1) _iprint(w, ", ", .{});
+                }
+                _iprint(w, "])", .{});
+            },
+            .hash_map => |hash_map| {
+                _iprint(w, "Map({{", .{});
+                const num_entries = self.len().?;
+                var it = hash_map.inner.iterator();
+                var i: usize = 0;
+                while (it.next()) |entry| : (i += 1) {
+                    try entry.key_ptr.repr(w);
+                    _iprint(w, ": ", .{});
+                    try entry.value_ptr.repr(w);
+                    if (i < num_entries - 1) _iprint(w, ", ", .{}) else _iprint(w, "}})", .{});
+                }
+            },
+            .matrix => |matrix| {
+                _iprint(w, "Matrix([\n", .{});
+                for (0..matrix.rows) |row| {
+                    _iprint(w, "    [", .{});
+                    for (0..matrix.columns) |column| {
+                        const elem = matrix.get(@intCast(row), @intCast(column));
+                        _iprint(w, "({d}, {d}): ", .{ row, column });
+                        try elem.repr(w);
+                        if (column < matrix.columns - 1) {
+                            _iprint(w, ", ", .{});
+                        } else if (row < matrix.rows) _iprint(w, "],\n", .{});
+                    }
+                }
+                _iprint(w, "])", .{});
+            },
+            else => unreachable,
+        }
     }
 
     pub inline fn len(self: Self) ?usize {
@@ -238,7 +293,7 @@ const HashMap = struct {
         }
 
         fn deepHash(hasher: anytype, value: IValue) void {
-            std.hash.autoHash(hasher, meta.activeTag(value));
+            std.hash.autoHash(hasher, value.tag());
 
             switch (value) {
                 .int => |int| std.hash.autoHash(hasher, int),
@@ -285,31 +340,54 @@ const HashMap = struct {
 };
 
 const IFunc = *const fn (*Interpreter, []IValue) Error!IValue;
-
 fn deepEqual(lhs: IValue, rhs: IValue) bool {
-    if (!lhs.is(meta.activeTag(rhs))) return false;
+    if (lhs.is(.float) and rhs.is(.int)) {
+        return deepEqual(rhs, lhs);
+    } else if (lhs.is(.int) and rhs.is(.float)) {
+        return @as(f64, @floatFromInt(lhs.int)) == rhs.float;
+    }
+
+    if (!lhs.is(rhs.tag())) return false;
     return switch (lhs) {
         .int => |int| int == rhs.int,
+        .float => |float| float == rhs.float,
         .boolean => |boolean| boolean == rhs.boolean,
         .string => |string| std.mem.eql(u8, string, rhs.string),
+
         .list => |list| eq: {
             if (list.elems.len != rhs.list.elems.len) break :eq false;
+
             for (list.elems, rhs.list.elems) |elem, rhs_elem| {
                 if (!deepEqual(elem, rhs_elem)) break :eq false;
             }
+
             break :eq true;
         },
+
         .hash_map => |hash_map| eq: {
-            if (hash_map.inner.count() != rhs.hash_map.inner.count()) return false;
+            if (hash_map.inner.count() != rhs.hash_map.inner.count())
+                break :eq false;
+
             var it = hash_map.inner.iterator();
-            var rhs_it = rhs.hash_map.inner.iterator();
             while (it.next()) |pair| {
-                const rhs_pair = rhs_it.next().?;
-                const pair_key, const rhs_pair_key = .{ pair.key_ptr.*, rhs_pair.key_ptr.* };
-                if (!deepEqual(pair_key, rhs_pair_key)) break :eq false;
+                var found_match = false;
+                var rhs_it = rhs.hash_map.inner.iterator();
+
+                while (rhs_it.next()) |rhs_pair| {
+                    if (deepEqual(pair.key_ptr.*, rhs_pair.key_ptr.*)) {
+                        if (deepEqual(pair.value_ptr.*, rhs_pair.value_ptr.*)) {
+                            found_match = true;
+                        }
+                        break;
+                    }
+                }
+
+                if (!found_match) break :eq false;
             }
+
             break :eq true;
         },
+
         else => unreachable,
     };
 }
@@ -363,6 +441,7 @@ const IMatrix = struct {
 pub fn visit(i: *Interpreter, index: ast.Index) Error!IValue {
     const node: ast.Node = i.getNode(index);
     return switch (node) {
+        .float => |float| .{ .float = float },
         .int => |int| .{ .int = int },
         .string => |string| .{ .string = string },
         .boolean => |boolean| .{ .boolean = boolean },
@@ -475,8 +554,10 @@ fn bin(i: *Interpreter, op: ast.BinOp, lhs: IValue, rhs: IValue) Error!IValue {
 }
 
 fn add(i: *Interpreter, lhs: IValue, rhs: IValue) !IValue {
+    if (lhs.isOneOf(&.{ .float, .int }) and rhs.is(.list)) return i.add(rhs, lhs);
     return switch (lhs) {
         .int => .{ .int = lhs.int + rhs.int },
+        .float => .{ .float = lhs.float + rhs.float },
         .string => .{ .string = try std.mem.concat(i.arena, u8, &.{ lhs.string, rhs.string }) },
         .list => list: switch (rhs) {
             .int, .string => {
@@ -498,19 +579,30 @@ fn add(i: *Interpreter, lhs: IValue, rhs: IValue) !IValue {
 }
 
 fn subtr(i: *Interpreter, lhs: IValue, rhs: IValue) !IValue {
+    if (lhs.isOneOf(&.{ .float, .int }) and rhs.is(.list)) return i.subtr(rhs, lhs);
+
     return switch (lhs) {
-        .int => .{ .int = lhs.int - rhs.int },
-        .list => |list| switch (rhs) {
-            .int => {
+        .int => switch (rhs) {
+            .int => .{ .int = lhs.int - rhs.int },
+            .float => .{ .float = @as(f64, @floatFromInt(lhs.int)) - rhs.float },
+            else => i.fail("Cannot subtract non-numeric type from integer", error.TypeError),
+        },
+        .float => switch (rhs) {
+            .int => .{ .float = lhs.float - @as(f64, @floatFromInt(rhs.int)) },
+            .float => .{ .float = lhs.float - rhs.float },
+            else => i.fail("Cannot subtract non-numeric type from float", error.TypeError),
+        },
+        .list => |list| list: switch (rhs) {
+            .int, .float => {
                 for (0.., list.elems) |j, elem| list.elems[j] = try i.subtr(elem, rhs);
-                return lhs;
+                break :list lhs;
             },
             .list => {
                 const len = lhs.len().?;
                 const elems = try i.arena.alloc(IValue, len);
                 for (0..len) |j| elems[j] = try i.subtr(list.elems[j], rhs.list.elems[j]);
                 const list_: List = .{ .elems = elems };
-                return .{ .list = try list_.makePointer(i.arena) };
+                break :list .{ .list = try list_.makePointer(i.arena) };
             },
             else => return i.fail("Values could not be broadcasted for the list", error.TypeError),
         },
@@ -519,59 +611,89 @@ fn subtr(i: *Interpreter, lhs: IValue, rhs: IValue) !IValue {
 }
 
 fn mult(i: *Interpreter, lhs: IValue, rhs: IValue) !IValue {
-    if (lhs.is(.int) and (rhs.is(.string) or rhs.is(.list))) return i.mult(rhs, lhs);
+    const _err = error.TypeError;
+    if (lhs.isOneOf(&.{ .int, .float }) and rhs.isOneOf(&.{ .string, .list })) {
+        return i.mult(rhs, lhs);
+    }
 
-    switch (lhs) {
-        .int => if (rhs.is(.int)) {
-            return .{ .int = lhs.int * rhs.int };
-        } else return i.fail("Cannot multiply integer by non-integer", error.TypeError),
-        .string => |string| if (rhs.is(.int)) {
-            if (rhs.int < 1) {
-                return i.fail("String multiplier must not be negative", error.TypeError);
-            }
-            const smu: usize = @intCast(rhs.int);
-            var buf = try i.arena.alloc(u8, string.len * smu);
-            for (0..smu) |j| {
-                const start = j * string.len;
-                @memcpy(buf[start .. start + string.len], string);
-            }
-            return .{ .string = buf };
-        } else return i.fail("Values could not be broadcasted for the string", error.TypeError),
-        .list => |list| switch (rhs) {
-            .int => {
+    return switch (lhs) {
+        .int => switch (rhs) {
+            .int => .{ .int = lhs.int * rhs.int },
+            .float => .{ .float = @as(f64, @floatFromInt(lhs.int)) * rhs.float },
+            else => i.fail("Cannot multiply integer by non-numeric type", _err),
+        },
+        .float => switch (rhs) {
+            .int => .{ .float = lhs.float * @as(f64, @floatFromInt(rhs.int)) },
+            .float => .{ .float = lhs.float * rhs.float },
+            else => i.fail("Cannot multiply float by non-numeric type", _err),
+        },
+        .string => |string| str: {
+            if (rhs.is(.int)) {
+                if (rhs.int < 1) {
+                    break :str i.fail("String multiplier must not be negative", _err);
+                }
+                const smu: usize = @intCast(rhs.int);
+                var buf = try i.arena.alloc(u8, string.len * smu);
+                for (0..smu) |j| {
+                    const start = j * string.len;
+                    @memcpy(buf[start .. start + string.len], string);
+                }
+                break :str .{ .string = buf };
+            } else break :str i.fail("Values could not be broadcasted for the string", _err);
+        },
+        .list => |list| list: switch (rhs) {
+            .int, .float => {
                 for (0.., list.elems) |j, elem| list.elems[j] = try i.mult(elem, rhs);
-                return lhs;
+                break :list lhs;
             },
             .list => {
                 const len = lhs.len().?;
                 const elems = try i.arena.alloc(IValue, len);
                 for (0..len) |j| elems[j] = try i.mult(list.elems[j], rhs.list.elems[j]);
                 const list_: List = .{ .elems = elems };
-                return .{ .list = try list_.makePointer(i.arena) };
+                break :list .{ .list = try list_.makePointer(i.arena) };
             },
-            else => return i.fail("Values could not be broadcasted for the list", error.TypeError),
+            else => break :list i.fail("Values could not be broadcasted for the list", _err),
         },
-        else => return i.fail("Invalid type for multiplication", error.TypeError),
-    }
+        else => i.fail("Invalid type for multiplication", error.TypeError),
+    };
 }
-
 fn div(i: *Interpreter, lhs: IValue, rhs: IValue) !IValue {
+    const _err = error.TypeError;
     return switch (lhs) {
-        .int => .{ .int = @divFloor(lhs.int, rhs.int) },
-        else => i.fail("Division is only supported for integers", error.TypeError),
+        .int => switch (rhs) {
+            .int => .{ .int = @divFloor(lhs.int, rhs.int) },
+            .float => .{ .float = @as(f64, @floatFromInt(lhs.int)) / rhs.float },
+            else => i.fail("Cannot divide integer by non-numeric type", _err),
+        },
+        .float => switch (rhs) {
+            .int => .{ .float = lhs.float / @as(f64, @floatFromInt(rhs.int)) },
+            .float => .{ .float = lhs.float / rhs.float },
+            else => i.fail("Cannot divide float by non-numeric type", _err),
+        },
+        else => i.fail("Division is only supported for numbers", _err),
     };
 }
 
 fn power(i: *Interpreter, lhs: IValue, rhs: IValue) !IValue {
+    const _err = error.TypeError;
     return switch (lhs) {
-        .int => .{ .int = std.math.pow(i64, lhs.int, rhs.int) },
-        else => i.fail("Power is only supported for integers", error.TypeError),
+        .int => switch (rhs) {
+            .int => .{ .int = std.math.pow(i32, lhs.int, rhs.int) },
+            .float => .{ .float = std.math.pow(f64, @as(f64, @floatFromInt(lhs.int)), rhs.float) },
+            else => i.fail("Cannot raise integer to non-numeric power", _err),
+        },
+        .float => switch (rhs) {
+            .int => .{ .float = std.math.pow(f64, lhs.float, @as(f64, @floatFromInt(rhs.int))) },
+            .float => .{ .float = std.math.pow(f64, lhs.float, rhs.float) },
+            else => i.fail("Cannot raise float to non-numeric power", _err),
+        },
+        else => i.fail("Power is only supported for numbers", _err),
     };
 }
 
 fn equal(i: *Interpreter, lhs: IValue, rhs: IValue) !IValue {
     _ = i;
-    if (!lhs.is(meta.activeTag(rhs))) return error.TypeError;
     return .{ .boolean = deepEqual(lhs, rhs) };
 }
 
@@ -580,34 +702,74 @@ fn notEqual(i: *Interpreter, lhs: IValue, rhs: IValue) !IValue {
 }
 
 fn lessThan(i: *Interpreter, lhs: IValue, rhs: IValue) !IValue {
-    const _reason = "Can only tell whether one integer is less than (LT) another";
+    const _reason = "Can only tell whether one number is less than (LT) another";
+    const _err = error.TypeError;
     return switch (lhs) {
-        .int => .{ .boolean = lhs.int < rhs.int },
-        else => i.fail(_reason, error.TypeError),
+        .int => switch (rhs) {
+            .int => .{ .boolean = lhs.int < rhs.int },
+            .float => .{ .boolean = @as(f64, @floatFromInt(lhs.int)) < rhs.float },
+            else => i.fail(_reason, _err),
+        },
+        .float => switch (rhs) {
+            .int => .{ .boolean = lhs.float < @as(f64, @floatFromInt(rhs.int)) },
+            .float => .{ .boolean = lhs.float < rhs.float },
+            else => i.fail(_reason, _err),
+        },
+        else => i.fail(_reason, _err),
     };
 }
 
 fn lessOrEqualThan(i: *Interpreter, lhs: IValue, rhs: IValue) !IValue {
-    const _reason = "Can only tell whether one integer is less or equal than (LET) another";
+    const _reason = "Can only tell whether one number is less or equal than (LET) another";
+    const _err = error.TypeError;
     return switch (lhs) {
-        .int => .{ .boolean = lhs.int <= rhs.int },
-        else => i.fail(_reason, error.TypeError),
+        .int => switch (rhs) {
+            .int => .{ .boolean = lhs.int <= rhs.int },
+            .float => .{ .boolean = @as(f64, @floatFromInt(lhs.int)) <= rhs.float },
+            else => i.fail(_reason, _err),
+        },
+        .float => switch (rhs) {
+            .int => .{ .boolean = lhs.float <= @as(f64, @floatFromInt(rhs.int)) },
+            .float => .{ .boolean = lhs.float <= rhs.float },
+            else => i.fail(_reason, _err),
+        },
+        else => i.fail(_reason, _err),
     };
 }
 
 fn greaterThan(i: *Interpreter, lhs: IValue, rhs: IValue) !IValue {
-    const _reason = "Can only tell whether one integer is greater than (GT) another";
+    const _reason = "Can only tell whether one number is greater than (GT) another";
+    const _err = error.TypeError;
     return switch (lhs) {
-        .int => .{ .boolean = lhs.int > rhs.int },
-        else => i.fail(_reason, error.TypeError),
+        .int => switch (rhs) {
+            .int => .{ .boolean = lhs.int > rhs.int },
+            .float => .{ .boolean = @as(f64, @floatFromInt(lhs.int)) > rhs.float },
+            else => i.fail(_reason, _err),
+        },
+        .float => switch (rhs) {
+            .int => .{ .boolean = lhs.float > @as(f64, @floatFromInt(rhs.int)) },
+            .float => .{ .boolean = lhs.float > rhs.float },
+            else => i.fail(_reason, _err),
+        },
+        else => i.fail(_reason, _err),
     };
 }
 
 fn greaterOrEqualThan(i: *Interpreter, lhs: IValue, rhs: IValue) !IValue {
-    const _reason = "Can only tell whether one integer is greater or equal than (GET) another";
+    const _reason = "Can only tell whether one number is greater or equal than (GET) another";
+    const _err = error.TypeError;
     return switch (lhs) {
-        .int => .{ .boolean = lhs.int >= rhs.int },
-        else => i.fail(_reason, error.TypeError),
+        .int => switch (rhs) {
+            .int => .{ .boolean = lhs.int >= rhs.int },
+            .float => .{ .boolean = @as(f64, @floatFromInt(lhs.int)) >= rhs.float },
+            else => i.fail(_reason, _err),
+        },
+        .float => switch (rhs) {
+            .int => .{ .boolean = lhs.float >= @as(f64, @floatFromInt(rhs.int)) },
+            .float => .{ .boolean = lhs.float >= rhs.float },
+            else => i.fail(_reason, _err),
+        },
+        else => i.fail(_reason, _err),
     };
 }
 
@@ -645,7 +807,7 @@ fn condExpr(i: *Interpreter, cond_expr: ast.CondExpr) !IValue {
 
 inline fn isTruthy(value: IValue) bool {
     return switch (value) {
-        .int => |int| int != 0,
+        .int, .float => |num| num != 0,
         .boolean => |boolean| boolean,
         .string, .list, .hash_map => value.len().? > 0,
         else => unreachable,
@@ -662,10 +824,10 @@ fn indexExpr(i: *Interpreter, index_expr: ast.IndexExpr) !IValue {
     // TODO: Support indexing into IMatrix.
     return switch (target) {
         .hash_map => |hash_map| hash_map.get(index) orelse .none,
-        .list => |list| list_: {
+        .list => |list| list: {
             if (index.int >= target.len().?)
-                break :list_ i.fail("List index out of bounds", null);
-            break :list_ list.get(@intCast(index.int));
+                break :list i.fail("List index out of bounds", null);
+            break :list list.get(@intCast(index.int));
         },
         else => i.fail("Could not index into the type", null),
     };
@@ -785,9 +947,9 @@ fn callExpr(i: *Interpreter, expr_call: ast.Call) Error!IValue {
 
 fn callBinExpr(i: *Interpreter, bin_expr: ast.BinExpr, args: CallArgs) !IValue {
     const lhs = try i.cvisit(bin_expr.lhs, args);
-    const lhs_allowed = [_]IValue.Tag{ .int, .string, .boolean };
+    const lhs_allowed = &.{ .int, .string, .boolean };
     const rhs = try i.cvisit(bin_expr.rhs, args);
-    if (lhs.isOneOf(&lhs_allowed) and rhs.is(.list)) {
+    if (lhs.isOneOf(lhs_allowed) and rhs.is(.list)) {
         return i.callBinExpr(.{
             .lhs = bin_expr.rhs,
             .op = bin_expr.op,
@@ -886,28 +1048,17 @@ fn opArg(i: *Interpreter, bin_op: ast.BinOp) !IValue {
 fn builtinPrint(i: *Interpreter, args: []IValue) !IValue {
     for (args, 0..) |arg, j| {
         switch (arg) {
-            .int => |int| i.uprint("{d}", .{int}),
-            .string => |string| i.uprint("{s}", .{string}),
-            .boolean => |boolean| i.uprint("{}", .{boolean}),
-            .list => |list| i.uprint("List(len={d})", .{list.elems.len}),
-            .hash_map => |hash_map| i.uprint("Map(len={d})", .{hash_map.inner.count()}),
-            .matrix => |imatrix| i.uprint("IMatrix({d}x{d})", .{ imatrix.rows, imatrix.columns }),
-            else => i.uprint("IValue: {any}", .{arg}),
+            .float, .int, .string, .boolean, .list, .hash_map, .matrix => try arg.repr(i.writer),
+            else => i.iprint("IValue: {any}", .{arg}),
         }
-        if (j < args.len - 1) i.uprint(" ", .{});
+        if (j < args.len - 1) i.iprint(" ", .{});
     }
-    i.uprint("\n", .{});
-    // for (0..ivalue.imatrix.rows) |row| {
-    //     for (0..ivalue.imatrix.columns) |column| {
-    //         const elem = ivalue.imatrix.get(@intCast(row), @intCast(column));
-    //         std.debug.print("({d}, {d}): {}\n", .{ row, column, elem.boolean });
-    //     }
-    // }
+    i.iprint("\n", .{});
     return .none;
 }
 
 /// Infallible print.
-fn uprint(i: *Interpreter, comptime format: []const u8, args: anytype) void {
+fn iprint(i: *Interpreter, comptime format: []const u8, args: anytype) void {
     i.writer.print(format, args) catch unreachable;
 }
 
@@ -982,18 +1133,21 @@ fn builtinAggregate(i: *Interpreter, args: []IValue) Error!IValue {
     const in = args[1].list;
     var elems = try i.arena.alloc(IValue, in.elems.len);
     for (0..selector.rows) |row| {
-        var acc: i64, var agg: u32 = .{ 0, 0 };
+        var acc: f64, var agg: u32 = .{ 0, 0 };
         for (0.., in.elems) |column, in_elem| {
             if (selector.get(@intCast(row), @intCast(column)).boolean) {
                 acc += in_elem.int;
                 agg += 1;
             }
         }
-        const elem = if (agg > 0) @divFloor(acc, agg) else 0;
-        elems[row] = .{ .int = elem };
+        elems[row] = .{ .float = acc / agg };
     }
     const list: List = .{ .elems = elems };
     return .{ .list = try list.makePointer(i.arena) };
+}
+
+test {
+    _ = @import("Interpreter.zig");
 }
 
 const std = @import("std");
