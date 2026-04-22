@@ -270,8 +270,7 @@ pub const Parser = struct {
     fn primExpr(self: *Self) !Index {
         var primary: Index = try switch (self.current.tag) {
             .ident => self.nameExpr(),
-            .float_literal => self.floatLiteral(),
-            .int_literal => self.intLiteral(),
+            .minus, .float_literal, .int_literal => self.numLiteral(),
             .string_literal => self.stringLiteral(),
             .left_brace => self.hashMapLiteral(),
             .left_bracket => self.listLiteral(),
@@ -372,16 +371,36 @@ pub const Parser = struct {
         return .{ args_start, args_len };
     }
 
-    fn floatLiteral(self: *Self) !Index {
+    fn numLiteral(self: *Self) !Index {
+        const index = switch (self.current.tag) {
+            .minus => num: {
+                self.step();
+                const _description = "Expected a number after '-'";
+                break :num try switch (self.current.tag) {
+                    .float_literal => self.floatLiteral(true),
+                    .int_literal => self.intLiteral(true),
+                    else => self.fail(.{ .description = _description }),
+                };
+            },
+            .float_literal => self.floatLiteral(null),
+            .int_literal => self.intLiteral(null),
+            else => self.fail(.{ .description = "Failed to parse with `numLiteral(...)`" }),
+        };
+        return index;
+    }
+
+    fn floatLiteral(self: *Self, neg: ?bool) !Index {
+        const neg_ = neg orelse false;
         const float = try fmt.parseFloat(f64, self.current.lexeme.?);
-        const index = try self.push(.{ .float = float });
+        const index = try self.push(.{ .float = if (!neg_) float else -float });
         self.step();
         return index;
     }
 
-    fn intLiteral(self: *Self) !Index {
+    fn intLiteral(self: *Self, neg: ?bool) !Index {
+        const neg_ = neg orelse false;
         const int = try fmt.parseInt(i32, self.current.lexeme.?, 10);
-        const index = try self.push(.{ .int = int });
+        const index = try self.push(.{ .int = if (!neg_) int else -int });
         self.step();
         return index;
     }
