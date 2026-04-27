@@ -2,6 +2,7 @@ const std = @import("std");
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
+    const is_tier1 = target.result.cpu.arch == .x86_64 and target.result.os.tag == .linux;
     const optimize = b.standardOptimizeOption(.{ .preferred_optimize_mode = .ReleaseSmall });
 
     const exe_mod = b.createModule(.{
@@ -16,7 +17,11 @@ pub fn build(b: *std.Build) void {
     const check = b.step("check", "Check if Splinter compiles");
 
     check.dependOn(&exe_check.step);
-    const exe = b.addExecutable(.{ .name = "splinter", .root_module = exe_mod });
+    const exe = b.addExecutable(.{
+        .name = "splinter",
+        .root_module = exe_mod,
+        .use_llvm = if (is_tier1) false else true,
+    });
     b.installArtifact(exe);
 
     const run_cmd = b.addRunArtifact(exe);

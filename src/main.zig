@@ -56,5 +56,6 @@ fn run(arena: std.mem.Allocator, source: []const u8, stderr: *Io.Writer, show_as
         try stderr.print("Error at line {d}: {s}\n", .{ diagnostic.at, diagnostic.description });
         return err;
     };
-    try stderr.print("Last IValue returned: {any}\n", .{ivalue});
+    try stderr.print("Last IValue returned: ", .{});
+    try ivalue.repr(stderr);
 }

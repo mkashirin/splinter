@@ -217,6 +217,7 @@ pub const IValue = union(enum) {
                 }
                 _iprint(w, "])", .{});
             },
+            .none => _iprint(w, "None\n", .{}),
             else => unreachable,
         }
     }
